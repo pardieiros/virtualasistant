@@ -29,6 +29,11 @@ const Login = () => {
     <div className="min-h-screen bg-dark-charcoal flex items-center justify-center p-4">
       <div className="w-full max-w-md">
         <div className="text-center mb-8">
+          <img 
+            src="/personal_assistance_logo_nobg.png" 
+            alt="Personal Assistant Logo" 
+            className="h-20 w-20 object-contain mx-auto mb-4"
+          />
           <h1 className="text-4xl font-bold text-primary-gold mb-2">Personal Assistant</h1>
           <p className="text-text-medium">Your AI-powered assistant</p>
         </div>

@@ -18,7 +18,14 @@ const Dashboard = () => {
       {/* Header */}
       <header className="bg-dark-warm-gray border-b border-dark-warm-gray">
         <div className="container mx-auto px-4 py-4 flex items-center justify-between">
-          <h1 className="text-2xl font-bold text-primary-gold">Personal Assistant</h1>
+          <div className="flex items-center gap-3">
+            <img 
+              src="/personal_assistance_logo_nobg.png" 
+              alt="Personal Assistant Logo" 
+              className="h-10 w-10 object-contain"
+            />
+            <h1 className="text-2xl font-bold text-primary-gold">Personal Assistant</h1>
+          </div>
           <button
             onClick={logout}
             className="btn-secondary text-sm"

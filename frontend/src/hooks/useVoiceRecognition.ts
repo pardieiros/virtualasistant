@@ -31,7 +31,7 @@ export const useVoiceRecognition = () => {
   const [audioLevel, setAudioLevel] = useState(0); // 0-100
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const onFinalTranscriptRef = useRef<((text: string) => void) | null>(null);
-  const silenceTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const silenceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const finalTranscriptRef = useRef<string>('');
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);

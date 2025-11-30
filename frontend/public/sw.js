@@ -1,6 +1,9 @@
 // This file will be processed by VitePWA injectManifest
 // The workbox precaching will be injected automatically
 
+// This will be replaced by workbox with the precache manifest
+const manifest = self.__WB_MANIFEST;
+
 // Service Worker for Push Notifications
 self.addEventListener('push', (event) => {
   let data = {};

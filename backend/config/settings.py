@@ -24,6 +24,19 @@ DEBUG = os.getenv('DEBUG', 'True') == 'True'
 
 ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', 'localhost,127.0.0.1').split(',')
 
+# Security settings for reverse proxy
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+USE_TLS = os.getenv('USE_TLS', 'False') == 'True'
+if USE_TLS:
+    SECURE_SSL_REDIRECT = False  # Nginx handles SSL
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+
+# CSRF settings
+CSRF_TRUSTED_ORIGINS = os.getenv(
+    'CSRF_TRUSTED_ORIGINS',
+    'http://localhost:1080,https://localhost:1443,https://virtualassistant.ddns.net'
+).split(',')
 
 # Application definition
 

@@ -8,6 +8,7 @@ from .views import (
     NoteViewSet,
     HomeAssistantConfigViewSet,
     ChatView,
+    PushSubscriptionViewSet,
 )
 
 router = DefaultRouter()
@@ -15,6 +16,7 @@ router.register(r'shopping-items', ShoppingItemViewSet, basename='shopping-item'
 router.register(r'agenda', AgendaEventViewSet, basename='agenda-event')
 router.register(r'notes', NoteViewSet, basename='note')
 router.register(r'homeassistant', HomeAssistantConfigViewSet, basename='homeassistant-config')
+router.register(r'push-subscriptions', PushSubscriptionViewSet, basename='push-subscription')
 
 class CustomTokenObtainPairView(TokenObtainPairView):
     serializer_class = CustomTokenObtainPairSerializer

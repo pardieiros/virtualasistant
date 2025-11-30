@@ -5,6 +5,7 @@ import { speak, stopSpeaking } from '../utils/speech';
 import { usePusher } from '../hooks/usePusher';
 import { getUserIdFromToken } from '../utils/jwt';
 import type { ChatMessage } from '../types';
+import VoiceModal from '../components/VoiceModal';
 
 const Chat = () => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -12,6 +13,7 @@ const Chat = () => {
   const [loading, setLoading] = useState(false);
   const [voiceEnabled, setVoiceEnabled] = useState(true);
   const [continuousMode, setContinuousMode] = useState(false);
+  const [voiceModalOpen, setVoiceModalOpen] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const { transcript, isListening, startListening, stopListening } = useSpeechRecognition();
 
@@ -225,7 +227,7 @@ const Chat = () => {
               rows={2}
               disabled={continuousMode}
             />
-            {(isListening || continuousMode) && (
+            {(isListening || continuousMode) && !voiceModalOpen && (
               <div className="mt-2 text-sm text-primary-gold flex items-center gap-2">
                 <span className={`w-2 h-2 rounded-full animate-pulse ${
                   continuousMode ? 'bg-primary-gold' : 'bg-status-error'
@@ -235,6 +237,13 @@ const Chat = () => {
             )}
           </div>
           <button
+            onClick={() => setVoiceModalOpen(true)}
+            className="btn-secondary p-3 transition-all hover:bg-primary-gold/10 hover:text-primary-gold"
+            title="Abrir modal de voz"
+          >
+            🎙️
+          </button>
+          <button
             onClick={handleMicClick}
             className={`btn-secondary p-3 transition-all ${
               continuousMode
@@ -243,7 +252,7 @@ const Chat = () => {
                 ? 'bg-status-error hover:bg-status-error/80'
                 : ''
             }`}
-            title={continuousMode ? 'Stop continuous conversation' : isListening ? 'Stop listening' : 'Start continuous conversation'}
+            title={continuousMode ? 'Parar conversa contínua' : isListening ? 'Parar de ouvir' : 'Iniciar conversa contínua'}
           >
             {continuousMode ? '🎙️' : '🎤'}
           </button>
@@ -278,6 +287,16 @@ const Chat = () => {
           )}
         </div>
       </div>
+
+      {/* Voice Modal */}
+      <VoiceModal
+        isOpen={voiceModalOpen}
+        onClose={() => setVoiceModalOpen(false)}
+        onTranscript={(text) => {
+          // Add transcript to messages if needed
+          setMessages((prev) => [...prev, { role: 'user', content: text }]);
+        }}
+      />
     </div>
   );
 };

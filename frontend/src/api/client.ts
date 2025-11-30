@@ -163,5 +163,21 @@ export const homeAssistantAPI = {
   },
 };
 
+// Push Subscription API
+export const pushSubscriptionAPI = {
+  register: async (subscription: { endpoint: string; keys: { p256dh: string; auth: string } }): Promise<void> => {
+    await apiClient.post('/push-subscriptions/register/', subscription);
+  },
+  
+  unregister: async (endpoint: string): Promise<void> => {
+    await apiClient.post('/push-subscriptions/unregister/', { endpoint });
+  },
+  
+  getVapidPublicKey: async (): Promise<{ public_key: string }> => {
+    const response = await apiClient.get('/push-subscriptions/vapid-public-key/');
+    return response.data;
+  },
+};
+
 export default apiClient;
 

@@ -1,7 +1,7 @@
 from rest_framework import serializers
 from django.contrib.auth.models import User
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
-from .models import ShoppingItem, AgendaEvent, Note, HomeAssistantConfig
+from .models import ShoppingItem, AgendaEvent, Note, HomeAssistantConfig, PushSubscription
 
 
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
@@ -69,3 +69,10 @@ class ChatMessageSerializer(serializers.Serializer):
 class ChatResponseSerializer(serializers.Serializer):
     reply = serializers.CharField()
     action = serializers.DictField(required=False, allow_null=True)
+
+
+class PushSubscriptionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PushSubscription
+        fields = ['id', 'endpoint', 'p256dh', 'auth', 'created_at']
+        read_only_fields = ['id', 'created_at']

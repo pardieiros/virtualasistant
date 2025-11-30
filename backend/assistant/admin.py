@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import ShoppingItem, AgendaEvent, Note, HomeAssistantConfig
+from .models import ShoppingItem, AgendaEvent, Note, HomeAssistantConfig, PushSubscription
 
 
 @admin.register(ShoppingItem)
@@ -34,4 +34,12 @@ class NoteAdmin(admin.ModelAdmin):
 class HomeAssistantConfigAdmin(admin.ModelAdmin):
     list_display = ['user', 'enabled', 'base_url', 'created_at']
     readonly_fields = ['created_at', 'updated_at']
+
+
+@admin.register(PushSubscription)
+class PushSubscriptionAdmin(admin.ModelAdmin):
+    list_display = ['user', 'endpoint', 'created_at']
+    list_filter = ['created_at']
+    search_fields = ['user__username', 'endpoint']
+    readonly_fields = ['created_at']
 

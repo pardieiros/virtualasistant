@@ -7,7 +7,7 @@ from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import filters
 from django.db.models import Q
 
-from .models import ShoppingItem, AgendaEvent, Note, HomeAssistantConfig
+from .models import ShoppingItem, AgendaEvent, Note, HomeAssistantConfig, PushSubscription
 from .serializers import (
     ShoppingItemSerializer,
     AgendaEventSerializer,
@@ -15,6 +15,7 @@ from .serializers import (
     HomeAssistantConfigSerializer,
     ChatMessageSerializer,
     ChatResponseSerializer,
+    PushSubscriptionSerializer,
 )
 from .services.ollama_client import build_messages, call_ollama, parse_action
 from .services.tool_dispatcher import dispatch_tool
@@ -217,4 +218,84 @@ class ChatView(APIView):
                 {'error': str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+
+
+class PushSubscriptionViewSet(viewsets.ModelViewSet):
+    serializer_class = PushSubscriptionSerializer
+    permission_classes = [IsAuthenticated]
+    
+    def get_queryset(self):
+        return PushSubscription.objects.filter(user=self.request.user)
+    
+    def perform_create(self, serializer):
+        serializer.save(user=self.request.user)
+    
+    @action(detail=False, methods=['post'])
+    def register(self, request):
+        """
+        Register a push subscription.
+        Expects: { "endpoint": "...", "keys": { "p256dh": "...", "auth": "..." } }
+        """
+        endpoint = request.data.get('endpoint')
+        keys = request.data.get('keys', {})
+        
+        if not endpoint or not keys.get('p256dh') or not keys.get('auth'):
+            return Response(
+                {'error': 'Missing required fields: endpoint, keys.p256dh, keys.auth'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        subscription, created = PushSubscription.objects.get_or_create(
+            user=request.user,
+            endpoint=endpoint,
+            defaults={
+                'p256dh': keys['p256dh'],
+                'auth': keys['auth'],
+            }
+        )
+        
+        if not created:
+            # Update existing subscription
+            subscription.p256dh = keys['p256dh']
+            subscription.auth = keys['auth']
+            subscription.save()
+        
+        serializer = self.get_serializer(subscription)
+        return Response(serializer.data, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
+    
+    @action(detail=False, methods=['post'])
+    def unregister(self, request):
+        """
+        Unregister a push subscription by endpoint.
+        Expects: { "endpoint": "..." }
+        """
+        endpoint = request.data.get('endpoint')
+        if not endpoint:
+            return Response(
+                {'error': 'Missing endpoint'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        deleted = PushSubscription.objects.filter(
+            user=request.user,
+            endpoint=endpoint
+        ).delete()
+        
+        return Response(
+            {'deleted': deleted[0] > 0},
+            status=status.HTTP_200_OK
+        )
+    
+    @action(detail=False, methods=['get'])
+    def vapid_public_key(self, request):
+        """
+        Get VAPID public key for push notifications.
+        """
+        from django.conf import settings
+        if not settings.VAPID_PUBLIC_KEY:
+            return Response(
+                {'error': 'VAPID public key not configured'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+        return Response({'public_key': settings.VAPID_PUBLIC_KEY})
 

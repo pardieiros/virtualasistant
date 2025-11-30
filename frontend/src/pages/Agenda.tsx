@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { agendaAPI } from '../api/client';
 import type { AgendaEvent } from '../types';
 import { format, parseISO } from 'date-fns';
+import { subscribeToPushNotifications, isSubscribedToPushNotifications } from '../utils/pushNotifications';
 
 const Agenda = () => {
   const [events, setEvents] = useState<AgendaEvent[]>([]);
@@ -19,7 +20,24 @@ const Agenda = () => {
 
   useEffect(() => {
     loadEvents();
+    // Request push notification permission and subscribe
+    requestPushNotificationPermission();
   }, []);
+
+  const requestPushNotificationPermission = async () => {
+    try {
+      const isSubscribed = await isSubscribedToPushNotifications();
+      if (!isSubscribed) {
+        // Request permission
+        const permission = await Notification.requestPermission();
+        if (permission === 'granted') {
+          await subscribeToPushNotifications();
+        }
+      }
+    } catch (error) {
+      console.error('Error setting up push notifications:', error);
+    }
+  };
 
   const loadEvents = async () => {
     try {

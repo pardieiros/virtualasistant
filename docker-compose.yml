@@ -26,6 +26,14 @@ services:
     networks:
       - app-network
 
+  redis:
+    image: redis:7-alpine
+    container_name: redisvirtualassistant
+    ports:
+      - "6379:6379"
+    networks:
+      - app-network
+
   nginx:
     image: nginx:alpine
     container_name: nginxvirtualassistant

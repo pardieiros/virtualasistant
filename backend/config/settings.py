@@ -169,3 +169,22 @@ SOCKET_HOST = os.getenv('SOCKET_HOST', 'localhost')
 SOCKET_PORT = os.getenv('SOCKET_PORT', '6001')
 SOCKET_USE_TLS = os.getenv('SOCKET_USE_TLS', 'False') == 'True'
 
+# Celery Configuration
+CELERY_BROKER_URL = os.getenv('CELERY_BROKER_URL', 'redis://localhost:6379/0')
+CELERY_RESULT_BACKEND = os.getenv('CELERY_RESULT_BACKEND', 'redis://localhost:6379/0')
+CELERY_ACCEPT_CONTENT = ['json']
+CELERY_TASK_SERIALIZER = 'json'
+CELERY_RESULT_SERIALIZER = 'json'
+CELERY_TIMEZONE = TIME_ZONE
+CELERY_BEAT_SCHEDULE = {
+    'check-upcoming-events': {
+        'task': 'assistant.tasks.check_upcoming_events',
+        'schedule': 60.0,  # Run every minute
+    },
+}
+
+# VAPID Keys for Web Push Notifications
+VAPID_PUBLIC_KEY = os.getenv('VAPID_PUBLIC_KEY', '')
+VAPID_PRIVATE_KEY = os.getenv('VAPID_PRIVATE_KEY', '')
+VAPID_EMAIL = os.getenv('VAPID_EMAIL', 'mailto:admin@example.com')
+

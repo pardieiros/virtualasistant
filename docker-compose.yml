@@ -7,6 +7,8 @@ services:
       dockerfile: Dockerfile
     env_file:
       - ./backend/.env
+    environment:
+      - DB_PASSWORD=Qm4!Ts8wLp2@Zv9fHr6$$Bn3kUy5?Cx1
     volumes:
       - ./backend:/app
       - backend_static:/app/staticfiles
@@ -26,6 +28,7 @@ services:
 
   nginx:
     image: nginx:alpine
+    container_name: nginxvirtualassistant
     ports:
       - "1080:1080"
       - "1443:1443"

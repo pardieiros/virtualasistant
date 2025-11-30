@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { agendaAPI } from '../api/client';
 import type { AgendaEvent } from '../types';
-import { format, parseISO, startOfWeek, endOfWeek, eachDayOfInterval } from 'date-fns';
+import { format, parseISO } from 'date-fns';
 
 const Agenda = () => {
   const [events, setEvents] = useState<AgendaEvent[]>([]);

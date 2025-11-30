@@ -6,9 +6,6 @@ const SOCKET_PORT = import.meta.env.VITE_SOCKET_PORT || '6001';
 const SOCKET_KEY = import.meta.env.VITE_SOCKET_KEY || '';
 const SOCKET_USE_TLS = import.meta.env.VITE_SOCKET_USE_TLS === 'true';
 
-const scheme = SOCKET_USE_TLS ? 'https' : 'http';
-const host = `${SOCKET_HOST}:${SOCKET_PORT}`;
-
 export const usePusher = (userId: number | null, onMessage: (event: string, data: any) => void) => {
   const pusherRef = useRef<Pusher | null>(null);
   const channelRef = useRef<any>(null);

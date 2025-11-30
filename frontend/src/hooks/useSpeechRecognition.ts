@@ -29,6 +29,9 @@ export const useSpeechRecognition = () => {
   const [isListening, setIsListening] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
+  const onFinalTranscriptRef = useRef<((text: string) => void) | null>(null);
+  const silenceTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const finalTranscriptRef = useRef<string>('');
 
   useEffect(() => {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -45,27 +48,53 @@ export const useSpeechRecognition = () => {
 
     recognition.onresult = (event: SpeechRecognitionEvent) => {
       let interimTranscript = '';
-      let finalTranscript = '';
+      let newFinalTranscript = '';
 
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const transcript = event.results[i][0].transcript;
         if (event.results[i].isFinal) {
-          finalTranscript += transcript + ' ';
+          newFinalTranscript += transcript + ' ';
         } else {
           interimTranscript += transcript;
         }
       }
 
-      setTranscript(finalTranscript + interimTranscript);
+      if (newFinalTranscript) {
+        const updatedFinal = finalTranscriptRef.current + newFinalTranscript;
+        finalTranscriptRef.current = updatedFinal;
+        setTranscript(updatedFinal + interimTranscript);
+        
+        // Clear any existing timeout
+        if (silenceTimeoutRef.current) {
+          clearTimeout(silenceTimeoutRef.current);
+        }
+        
+        // Set timeout to detect end of speech (1.5 seconds of silence)
+        silenceTimeoutRef.current = setTimeout(() => {
+          if (onFinalTranscriptRef.current && updatedFinal.trim()) {
+            onFinalTranscriptRef.current(updatedFinal.trim());
+            finalTranscriptRef.current = '';
+            setTranscript('');
+          }
+        }, 1500);
+      } else {
+        setTranscript(finalTranscriptRef.current + interimTranscript);
+      }
     };
 
     recognition.onerror = (event: any) => {
       setError(`Speech recognition error: ${event.error}`);
       setIsListening(false);
+      if (silenceTimeoutRef.current) {
+        clearTimeout(silenceTimeoutRef.current);
+      }
     };
 
     recognition.onend = () => {
       setIsListening(false);
+      if (silenceTimeoutRef.current) {
+        clearTimeout(silenceTimeoutRef.current);
+      }
     };
 
     recognitionRef.current = recognition;
@@ -74,14 +103,19 @@ export const useSpeechRecognition = () => {
       if (recognitionRef.current) {
         recognitionRef.current.stop();
       }
+      if (silenceTimeoutRef.current) {
+        clearTimeout(silenceTimeoutRef.current);
+      }
     };
   }, []);
 
-  const startListening = () => {
+  const startListening = (onFinalTranscript?: (text: string) => void) => {
     if (recognitionRef.current && !isListening) {
       setTranscript('');
+      finalTranscriptRef.current = '';
       setError(null);
       setIsListening(true);
+      onFinalTranscriptRef.current = onFinalTranscript || null;
       recognitionRef.current.start();
     }
   };
@@ -90,6 +124,10 @@ export const useSpeechRecognition = () => {
     if (recognitionRef.current && isListening) {
       recognitionRef.current.stop();
       setIsListening(false);
+      if (silenceTimeoutRef.current) {
+        clearTimeout(silenceTimeoutRef.current);
+      }
+      onFinalTranscriptRef.current = null;
     }
   };
 

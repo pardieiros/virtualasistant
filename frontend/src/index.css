@@ -19,19 +19,19 @@
 
 @layer components {
   .btn-primary {
-    @apply bg-primary-gold hover:bg-primary-gold-soft text-dark-charcoal font-semibold py-2 px-4 rounded-lg transition-colors;
+    @apply bg-gradient-to-r from-primary-gold to-primary-gold-soft hover:from-primary-gold-soft hover:to-primary-gold text-dark-charcoal font-semibold py-2 px-4 rounded-lg transition-all shadow-lg hover:shadow-primary-gold/20;
   }
 
   .btn-secondary {
-    @apply bg-dark-warm-gray hover:bg-dark-warm-gray/80 text-text-light font-semibold py-2 px-4 rounded-lg transition-colors;
+    @apply bg-dark-warm-gray hover:bg-primary-gold/10 hover:text-primary-gold text-text-light font-semibold py-2 px-4 rounded-lg transition-all border border-transparent hover:border-primary-gold/20;
   }
 
   .input-field {
-    @apply bg-dark-warm-gray border border-dark-warm-gray focus:border-primary-gold text-text-light rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-primary-gold/50;
+    @apply bg-dark-warm-gray/90 backdrop-blur-sm border border-primary-gold/10 focus:border-primary-gold text-text-light rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-primary-gold/30 transition-all;
   }
 
   .card {
-    @apply bg-dark-warm-gray rounded-lg p-6 border border-dark-warm-gray;
+    @apply bg-dark-warm-gray/90 backdrop-blur-sm rounded-lg p-6 border border-primary-gold/10 shadow-lg;
   }
 }
 

@@ -448,11 +448,16 @@ class TTSView(APIView):
                 status=status.HTTP_503_SERVICE_UNAVAILABLE
             )
         
-        # Return audio as WAV file
-        from django.http import HttpResponse
-        response = HttpResponse(audio_data, content_type='audio/wav')
-        response['Content-Disposition'] = 'inline; filename="speech.wav"'
-        return response
+        # Convert audio to base64
+        import base64
+        audio_base64 = base64.b64encode(audio_data).decode('utf-8')
+        
+        # Return audio as base64 JSON
+        return Response({
+            'audio': audio_base64,
+            'format': 'wav',
+            'size': len(audio_data)
+        })
 
 
 class PushSubscriptionViewSet(viewsets.ModelViewSet):

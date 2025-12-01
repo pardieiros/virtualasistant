@@ -193,14 +193,25 @@ export const ttsAPI = {
    * @returns Audio blob
    */
   generate: async (text: string): Promise<Blob> => {
-    const response = await apiClient.post(
+    const response = await apiClient.post<{ audio: string; format: string; size: number }>(
       '/tts/',
-      { text },
-      {
-        responseType: 'blob', // Important: receive as blob
-      }
+      { text }
     );
-    return response.data;
+    
+    // Convert base64 to blob
+    const audioBase64 = response.data.audio;
+    const format = response.data.format || 'wav';
+    
+    // Decode base64 to binary
+    const byteCharacters = atob(audioBase64);
+    const byteNumbers = new Array(byteCharacters.length);
+    for (let i = 0; i < byteCharacters.length; i++) {
+      byteNumbers[i] = byteCharacters.charCodeAt(i);
+    }
+    const byteArray = new Uint8Array(byteNumbers);
+    
+    // Create blob from binary data
+    return new Blob([byteArray], { type: `audio/${format}` });
   },
 };
 

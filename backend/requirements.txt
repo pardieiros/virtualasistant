@@ -13,4 +13,7 @@ celery==5.3.4
 redis==5.0.1
 pywebpush==1.14.0
 py-vapid==1.9.2
+pgvector==0.2.4
+duckduckgo-search==6.1.1
+beautifulsoup4==4.12.3
 

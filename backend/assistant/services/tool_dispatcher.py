@@ -1,6 +1,6 @@
 from typing import Dict, Any, Optional
 from django.contrib.auth.models import User
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from ..models import ShoppingItem, AgendaEvent, Note
 from .homeassistant_client import call_homeassistant_service
 
@@ -27,6 +27,13 @@ def dispatch_tool(tool_name: str, args: Dict[str, Any], user: User) -> Dict[str,
         return save_note(args, user)
     elif tool_name == 'homeassistant_call_service':
         return homeassistant_call_service(args, user)
+    elif tool_name == 'web_search':
+        # Web search is handled asynchronously via Celery task
+        # This should not be called directly
+        return {
+            'success': False,
+            'message': 'Web search should be handled asynchronously'
+        }
     else:
         return {
             'success': False,
@@ -89,10 +96,54 @@ def show_shopping_list(user: User) -> Dict[str, Any]:
 def add_agenda_event(args: Dict[str, Any], user: User) -> Dict[str, Any]:
     """Add a new agenda event."""
     try:
-        start_datetime = datetime.fromisoformat(args['start_datetime'].replace('Z', '+00:00'))
+        # Parse start datetime
+        start_datetime_str = args['start_datetime'].replace('Z', '+00:00')
+        start_datetime = datetime.fromisoformat(start_datetime_str)
+        
+        # Make timezone-aware if not already
+        now = datetime.now(timezone.utc)
+        if start_datetime.tzinfo is None:
+            start_datetime = start_datetime.replace(tzinfo=timezone.utc)
+        
+        # Validate and adjust date if needed
+        
+        # Check if date is clearly wrong (more than 1 day in the past, or very old dates like 2023)
+        # Allow events from today even if time has passed (user might want to log past events)
+        one_day_ago = now - timedelta(days=1)
+        is_old_date = start_datetime.year < now.year or (start_datetime.year == now.year and start_datetime < one_day_ago)
+        
+        if is_old_date:
+            # Date is clearly wrong (very old or more than 1 day in the past)
+            # This is likely an error from LLM, adjust it
+            # Keep the time but move to today or tomorrow
+            today_at_time = now.replace(
+                hour=start_datetime.hour,
+                minute=start_datetime.minute,
+                second=0,
+                microsecond=0
+            )
+            
+            if today_at_time < now:
+                # Time has passed today, schedule for tomorrow
+                start_datetime = today_at_time + timedelta(days=1)
+            else:
+                # Time hasn't passed today, schedule for today
+                start_datetime = today_at_time
+        # If date is today or in the future (even if a few hours ago), trust the LLM
+        # The LLM now has access to current date and should handle "today" correctly
+        
+        # Parse end datetime if provided
         end_datetime = None
         if args.get('end_datetime'):
-            end_datetime = datetime.fromisoformat(args['end_datetime'].replace('Z', '+00:00'))
+            end_datetime_str = args['end_datetime'].replace('Z', '+00:00')
+            end_datetime = datetime.fromisoformat(end_datetime_str)
+            if end_datetime.tzinfo is None:
+                end_datetime = end_datetime.replace(tzinfo=timezone.utc)
+            
+            # Ensure end_datetime is after start_datetime
+            if end_datetime <= start_datetime:
+                # Add 1 hour if end is before or equal to start
+                end_datetime = start_datetime + timedelta(hours=1)
         
         event = AgendaEvent.objects.create(
             user=user,
@@ -103,6 +154,7 @@ def add_agenda_event(args: Dict[str, Any], user: User) -> Dict[str, Any]:
             location=args.get('location', ''),
             category=args.get('category', 'personal'),
             all_day=args.get('all_day', False),
+            send_notification=args.get('send_notification', False),
         )
         return {
             'success': True,

@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import ShoppingItem, AgendaEvent, Note, HomeAssistantConfig, PushSubscription
+from .models import ShoppingItem, AgendaEvent, Note, HomeAssistantConfig, PushSubscription, UserNotificationPreferences, Memory
 
 
 @admin.register(ShoppingItem)
@@ -12,8 +12,8 @@ class ShoppingItemAdmin(admin.ModelAdmin):
 
 @admin.register(AgendaEvent)
 class AgendaEventAdmin(admin.ModelAdmin):
-    list_display = ['title', 'user', 'start_datetime', 'category', 'location']
-    list_filter = ['category', 'all_day', 'start_datetime']
+    list_display = ['title', 'user', 'start_datetime', 'category', 'location', 'send_notification']
+    list_filter = ['category', 'all_day', 'send_notification', 'start_datetime']
     search_fields = ['title', 'description', 'location']
     readonly_fields = ['created_at']
 
@@ -42,4 +42,24 @@ class PushSubscriptionAdmin(admin.ModelAdmin):
     list_filter = ['created_at']
     search_fields = ['user__username', 'endpoint']
     readonly_fields = ['created_at']
+
+
+@admin.register(UserNotificationPreferences)
+class UserNotificationPreferencesAdmin(admin.ModelAdmin):
+    list_display = ['user', 'agenda_events_enabled', 'agenda_reminder_minutes', 'shopping_updates_enabled']
+    list_filter = ['agenda_events_enabled', 'shopping_updates_enabled']
+    search_fields = ['user__username']
+    readonly_fields = ['created_at', 'updated_at']
+
+
+@admin.register(Memory)
+class MemoryAdmin(admin.ModelAdmin):
+    list_display = ['id', 'user', 'memory_type', 'content_preview', 'importance', 'created_at']
+    list_filter = ['memory_type', 'created_at']
+    search_fields = ['content', 'user__username']
+    readonly_fields = ['created_at', 'updated_at']
+    
+    def content_preview(self, obj):
+        return obj.content[:100] + '...' if len(obj.content) > 100 else obj.content
+    content_preview.short_description = 'Content'
 

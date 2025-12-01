@@ -189,6 +189,7 @@ CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = TIME_ZONE
+CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
 CELERY_BEAT_SCHEDULE = {
     'check-upcoming-events': {
         'task': 'assistant.tasks.check_upcoming_events',
@@ -200,4 +201,87 @@ CELERY_BEAT_SCHEDULE = {
 VAPID_PUBLIC_KEY = os.getenv('VAPID_PUBLIC_KEY', '')
 VAPID_PRIVATE_KEY = os.getenv('VAPID_PRIVATE_KEY', '')
 VAPID_EMAIL = os.getenv('VAPID_EMAIL', 'mailto:admin@example.com')
+
+# TTS (Text-to-Speech) Configuration
+TTS_SERVICE_URL = os.getenv('TTS_SERVICE_URL', 'http://192.168.1.73:8010/api/tts/')
+
+# SearXNG Configuration
+SEARXNG_BASE_URL = os.getenv('SEARXNG_BASE_URL', 'http://192.168.1.73:8080')
+
+# Logging Configuration
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'verbose': {
+            'format': '{levelname} {asctime} {module} {process:d} {thread:d} {message}',
+            'style': '{',
+        },
+        'simple': {
+            'format': '{levelname} {asctime} {message}',
+            'style': '{',
+        },
+    },
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+            'formatter': 'verbose',
+        },
+        'file': {
+            'class': 'logging.FileHandler',
+            'filename': os.path.join(BASE_DIR, 'logs', 'django.log'),
+            'formatter': 'verbose',
+        },
+        'celery_file': {
+            'class': 'logging.FileHandler',
+            'filename': os.path.join(BASE_DIR, 'logs', 'celery.log'),
+            'formatter': 'verbose',
+        },
+    },
+    'root': {
+        'handlers': ['console', 'file'],
+        'level': 'INFO',
+    },
+    'loggers': {
+        'django': {
+            'handlers': ['console', 'file'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+        'assistant': {
+            'handlers': ['console', 'file'],
+            'level': 'DEBUG',
+            'propagate': False,
+        },
+        'assistant.tasks': {
+            'handlers': ['console', 'celery_file'],
+            'level': 'DEBUG',
+            'propagate': False,
+        },
+        'assistant.services': {
+            'handlers': ['console', 'file', 'celery_file'],
+            'level': 'DEBUG',
+            'propagate': False,
+        },
+        'assistant.services.pusher_service': {
+            'handlers': ['console', 'file', 'celery_file'],
+            'level': 'DEBUG',
+            'propagate': False,
+        },
+        'requests': {
+            'handlers': ['console', 'file'],
+            'level': 'DEBUG',
+            'propagate': False,
+        },
+        'celery': {
+            'handlers': ['console', 'celery_file'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+    },
+}
+
+# Create logs directory if it doesn't exist
+LOGS_DIR = os.path.join(BASE_DIR, 'logs')
+os.makedirs(LOGS_DIR, exist_ok=True)
 

@@ -7,7 +7,7 @@ from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import filters
 from django.db.models import Q
 
-from .models import ShoppingItem, AgendaEvent, Note, HomeAssistantConfig, PushSubscription
+from .models import ShoppingItem, AgendaEvent, Note, HomeAssistantConfig, PushSubscription, UserNotificationPreferences
 from .serializers import (
     ShoppingItemSerializer,
     AgendaEventSerializer,
@@ -16,10 +16,17 @@ from .serializers import (
     ChatMessageSerializer,
     ChatResponseSerializer,
     PushSubscriptionSerializer,
+    UserNotificationPreferencesSerializer,
 )
 from .services.ollama_client import build_messages, call_ollama, parse_action
 from .services.tool_dispatcher import dispatch_tool
 from .services.pusher_service import publish_to_user
+from .services.memory_service import extract_memories_from_conversation
+from .tasks import perform_web_search_and_respond
+from .services.tts_service import generate_speech
+from django.conf import settings
+import hmac
+import hashlib
 
 
 class ShoppingItemViewSet(viewsets.ModelViewSet):
@@ -80,11 +87,14 @@ class AgendaEventViewSet(viewsets.ModelViewSet):
         end_date = self.request.query_params.get('end_date', None)
         
         if start_date:
+            # Filter events that start on or after start_date
             queryset = queryset.filter(start_datetime__gte=start_date)
         if end_date:
+            # Filter events that start on or before end_date
+            # This ensures we get events that occur within the range
             queryset = queryset.filter(start_datetime__lte=end_date)
         
-        return queryset
+        return queryset.order_by('start_datetime')
     
     def perform_create(self, serializer):
         serializer.save(user=self.request.user)
@@ -161,14 +171,17 @@ class ChatView(APIView):
     permission_classes = [IsAuthenticated]
     
     def post(self, request):
+        import logging
+        logger = logging.getLogger(__name__)
+        
         serializer = ChatMessageSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         
         message = serializer.validated_data['message']
         history = serializer.validated_data.get('history', [])
         
-        # Build messages for Ollama
-        messages = build_messages(history, message)
+        # Build messages for Ollama (with memory retrieval)
+        messages = build_messages(history, message, user=request.user)
         
         try:
             # Call Ollama
@@ -187,12 +200,76 @@ class ChatView(APIView):
                 ]
                 clean_response = '\n'.join(clean_lines).strip()
             
-            # Execute action if present
+            # Check if action is web_search - handle asynchronously
+            if action and action.get('tool') == 'web_search':
+                search_query = action.get('args', {}).get('query', message)
+                
+                logger.info(f"Web search requested for user {request.user.id}, query: {search_query}")
+                
+                try:
+                    # Launch async task for web search
+                    task_result = perform_web_search_and_respond.delay(
+                        user_id=request.user.id,
+                        query=message,
+                        original_message=message,
+                        conversation_history=history,
+                        search_query=search_query
+                    )
+                    logger.info(f"Web search task launched with ID: {task_result.id}")
+                except Exception as e:
+                    logger.error(f"Error launching web search task: {e}", exc_info=True)
+                    # Fallback: return error message
+                    return Response({
+                        'reply': 'Erro ao iniciar pesquisa. Por favor tenta novamente.',
+                        'action': action,
+                        'action_result': {'status': 'error', 'message': str(e)},
+                        'search_in_progress': False
+                    }, status=status.HTTP_200_OK)
+                
+                # Return immediately with a message that search is in progress
+                return Response({
+                    'reply': f'🔍 A pesquisar na internet sobre: "{search_query}"...',
+                    'action': action,
+                    'action_result': {'status': 'searching', 'message': 'Search in progress', 'task_id': task_result.id},
+                    'search_in_progress': True
+                }, status=status.HTTP_200_OK)
+            
+            # Execute other actions synchronously
             action_result = None
+            actions_taken = []
             if action:
                 tool_name = action.get('tool')
                 tool_args = action.get('args', {})
                 action_result = dispatch_tool(tool_name, tool_args, request.user)
+                actions_taken.append({
+                    'tool': tool_name,
+                    'args': tool_args,
+                    'result': action_result
+                })
+            
+            # Extract and save memories from this conversation
+            try:
+                extract_memories_from_conversation(
+                    user=request.user,
+                    user_message=message,
+                    assistant_response=clean_response,
+                    actions_taken=actions_taken
+                )
+            except Exception as e:
+                # Log but don't fail the request if memory saving fails
+                logger.warning(f"Failed to save memories: {e}")
+            
+            # Generate audio for the response
+            audio_base64 = None
+            try:
+                from .services.tts_service import generate_speech
+                import base64
+                audio_data = generate_speech(clean_response)
+                if audio_data:
+                    audio_base64 = base64.b64encode(audio_data).decode('utf-8')
+                    logger.info(f"Audio generated for response, size: {len(audio_data)} bytes")
+            except Exception as e:
+                logger.warning(f"Error generating audio: {e}")
             
             # Prepare response
             response_data = {
@@ -202,22 +279,180 @@ class ChatView(APIView):
             }
             
             # Publish to Soketi for realtime updates
-            publish_to_user(
+            pusher_data = {
+                'message': clean_response,
+                'action': action,
+            }
+            
+            if audio_base64:
+                pusher_data['audio'] = audio_base64
+                pusher_data['audio_format'] = 'wav'
+            
+            # Try to publish via Pusher
+            pusher_sent = publish_to_user(
                 request.user.id,
                 'assistant-message',
-                {
-                    'message': clean_response,
-                    'action': action,
-                }
+                pusher_data
             )
             
-            return Response(response_data, status=status.HTTP_200_OK)
+            # If Pusher is configured and working, don't return full message in HTTP response
+            # Frontend will receive it via Pusher to avoid duplicates
+            # Only return minimal response to indicate success
+            if pusher_sent:
+                # Pusher is working - return minimal response, frontend will get message via Pusher
+                return Response({
+                    'reply': None,  # Message will come via Pusher
+                    'action': action if action else None,
+                    'action_result': action_result if action_result else None,
+                    'via_pusher': True,  # Signal that message is coming via Pusher
+                }, status=status.HTTP_200_OK)
+            else:
+                # Pusher not working - return full response as fallback
+                logger.warning("Pusher not available, returning full response in HTTP")
+                return Response(response_data, status=status.HTTP_200_OK)
         
         except Exception as e:
             return Response(
                 {'error': str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+
+
+class UserNotificationPreferencesViewSet(viewsets.ModelViewSet):
+    serializer_class = UserNotificationPreferencesSerializer
+    permission_classes = [IsAuthenticated]
+    
+    def get_queryset(self):
+        return UserNotificationPreferences.objects.filter(user=self.request.user)
+    
+    def perform_create(self, serializer):
+        serializer.save(user=self.request.user)
+    
+    @action(detail=False, methods=['get', 'post'])
+    def my_preferences(self, request):
+        """Get or create/update the current user's notification preferences."""
+        preferences, created = UserNotificationPreferences.objects.get_or_create(
+            user=request.user,
+            defaults={
+                'agenda_events_enabled': True,
+                'agenda_reminder_minutes': 15,
+                'shopping_updates_enabled': False,
+            }
+        )
+        
+        if request.method == 'POST':
+            serializer = self.get_serializer(preferences, data=request.data, partial=True)
+            serializer.is_valid(raise_exception=True)
+            serializer.save()
+            return Response(serializer.data)
+        
+        serializer = self.get_serializer(preferences)
+        return Response(serializer.data)
+
+
+class PusherAuthView(APIView):
+    """
+    Authenticate Pusher private channel subscriptions.
+    Required for private channels in Pusher/Soketi.
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def post(self, request):
+        socket_id = request.data.get('socket_id')
+        channel_name = request.data.get('channel_name')
+        
+        if not socket_id or not channel_name:
+            return Response(
+                {'error': 'socket_id and channel_name are required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Verify channel name format (private-user-{user_id})
+        if not channel_name.startswith('private-user-'):
+            return Response(
+                {'error': 'Invalid channel name'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        # Extract user_id from channel name
+        try:
+            channel_user_id = int(channel_name.replace('private-user-', ''))
+        except ValueError:
+            return Response(
+                {'error': 'Invalid channel name format'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        # Verify user is requesting their own channel
+        if channel_user_id != request.user.id:
+            return Response(
+                {'error': 'Unauthorized channel access'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        # Generate auth signature
+        app_secret = getattr(settings, 'SOCKET_APP_SECRET', '').strip()
+        if not app_secret:
+            return Response(
+                {'error': 'Pusher not configured'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+        
+        # Create auth string: socket_id:channel_name
+        auth_string = f"{socket_id}:{channel_name}"
+        
+        # Generate HMAC SHA256 signature
+        signature = hmac.new(
+            app_secret.encode('utf-8'),
+            auth_string.encode('utf-8'),
+            hashlib.sha256
+        ).hexdigest()
+        
+        return Response({
+            'auth': f"{getattr(settings, 'SOCKET_APP_KEY', '').strip()}:{signature}"
+        })
+
+
+class TTSView(APIView):
+    """
+    Text-to-Speech endpoint.
+    Generates audio from text using the Piper TTS service.
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def post(self, request):
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        text = request.data.get('text', '').strip()
+        
+        if not text:
+            return Response(
+                {'error': 'Text is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Generate speech audio
+        try:
+            audio_data = generate_speech(text)
+        except Exception as e:
+            logger.error(f"Error generating speech: {e}", exc_info=True)
+            return Response(
+                {'error': 'Failed to generate speech. TTS service may be unavailable.'},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE
+            )
+        
+        if audio_data is None:
+            return Response(
+                {'error': 'Failed to generate speech. TTS service may be unavailable.'},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE
+            )
+        
+        # Return audio as WAV file
+        from django.http import HttpResponse
+        response = HttpResponse(audio_data, content_type='audio/wav')
+        response['Content-Disposition'] = 'inline; filename="speech.wav"'
+        return response
 
 
 class PushSubscriptionViewSet(viewsets.ModelViewSet):

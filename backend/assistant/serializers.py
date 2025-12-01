@@ -1,7 +1,7 @@
 from rest_framework import serializers
 from django.contrib.auth.models import User
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
-from .models import ShoppingItem, AgendaEvent, Note, HomeAssistantConfig, PushSubscription
+from .models import ShoppingItem, AgendaEvent, Note, HomeAssistantConfig, PushSubscription, UserNotificationPreferences
 
 
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
@@ -29,7 +29,7 @@ class AgendaEventSerializer(serializers.ModelSerializer):
         model = AgendaEvent
         fields = [
             'id', 'title', 'description', 'start_datetime', 'end_datetime',
-            'location', 'category', 'all_day', 'created_at'
+            'location', 'category', 'all_day', 'send_notification', 'created_at'
         ]
         read_only_fields = ['created_at']
 
@@ -76,3 +76,13 @@ class PushSubscriptionSerializer(serializers.ModelSerializer):
         model = PushSubscription
         fields = ['id', 'endpoint', 'p256dh', 'auth', 'created_at']
         read_only_fields = ['id', 'created_at']
+
+
+class UserNotificationPreferencesSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = UserNotificationPreferences
+        fields = [
+            'agenda_events_enabled', 'agenda_reminder_minutes',
+            'shopping_updates_enabled', 'created_at', 'updated_at'
+        ]
+        read_only_fields = ['created_at', 'updated_at']

@@ -1,5 +1,6 @@
 from django.db import models
 from django.contrib.auth.models import User
+from pgvector.django import VectorField
 
 
 class ShoppingItem(models.Model):
@@ -54,6 +55,7 @@ class AgendaEvent(models.Model):
     location = models.CharField(max_length=200, blank=True)
     category = models.CharField(max_length=20, choices=CATEGORY_CHOICES, default='personal')
     all_day = models.BooleanField(default=False)
+    send_notification = models.BooleanField(default=False, help_text="Send push notification before event starts")
     created_at = models.DateTimeField(auto_now_add=True)
     
     class Meta:
@@ -109,4 +111,58 @@ class PushSubscription(models.Model):
     
     def __str__(self):
         return f"Push Subscription ({self.user.username})"
+
+
+class UserNotificationPreferences(models.Model):
+    """User preferences for push notifications."""
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='notification_preferences')
+    agenda_events_enabled = models.BooleanField(default=True, help_text="Enable notifications for agenda events")
+    agenda_reminder_minutes = models.IntegerField(default=15, help_text="Minutes before event to send notification")
+    shopping_updates_enabled = models.BooleanField(default=False, help_text="Enable notifications for shopping list updates")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        verbose_name = "User Notification Preferences"
+        verbose_name_plural = "User Notification Preferences"
+    
+    def __str__(self):
+        return f"Notification Preferences ({self.user.username})"
+
+
+class Memory(models.Model):
+    """
+    Stores user memories with vector embeddings for semantic search.
+    This allows the assistant to remember past interactions, preferences, and context.
+    """
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='memories')
+    content = models.TextField(help_text="The memory content (what happened, what was said, etc.)")
+    embedding = VectorField(dimensions=768, null=True, blank=True, help_text="Vector embedding for semantic search")
+    memory_type = models.CharField(
+        max_length=50,
+        choices=[
+            ('shopping', 'Shopping'),
+            ('agenda', 'Agenda'),
+            ('preference', 'Preference'),
+            ('fact', 'Fact'),
+            ('interaction', 'Interaction'),
+            ('other', 'Other'),
+        ],
+        default='interaction',
+        help_text="Type of memory"
+    )
+    metadata = models.JSONField(default=dict, blank=True, help_text="Additional metadata (e.g., item names, dates, etc.)")
+    importance = models.FloatField(default=0.5, help_text="Importance score (0.0 to 1.0) for filtering")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['user', 'memory_type']),
+            models.Index(fields=['user', 'created_at']),
+        ]
+    
+    def __str__(self):
+        return f"Memory {self.id} ({self.user.username}): {self.content[:50]}..."
 

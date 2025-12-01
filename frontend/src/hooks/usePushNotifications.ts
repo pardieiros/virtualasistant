@@ -117,13 +117,28 @@ export function usePushNotifications(): UsePushNotificationsReturn {
       const vapidData = await pushSubscriptionAPI.getVapidPublicKey()
       const vapidPublicKey = vapidData.public_key
 
+      if (!vapidPublicKey) {
+        throw new Error('VAPID public key not received from server')
+      }
+
       // Convert VAPID key from base64 URL-safe to Uint8Array
+      // The key should be 65 bytes (0x04 prefix + 32 bytes X + 32 bytes Y)
       const keyArray = urlBase64ToUint8Array(vapidPublicKey)
+      
+      // Validate key length (should be 65 bytes for uncompressed P-256 public key)
+      if (keyArray.length !== 65) {
+        throw new Error(
+          `Invalid VAPID public key length: expected 65 bytes, got ${keyArray.length}. ` +
+          `Please regenerate VAPID keys using the updated script.`
+        )
+      }
 
       // Subscribe to push manager
+      // Create a new ArrayBuffer to ensure proper type compatibility
+      const keyBuffer = new Uint8Array(keyArray).buffer
       const subscription = await reg.pushManager.subscribe({
         userVisibleOnly: true,
-        applicationServerKey: keyArray as BufferSource,
+        applicationServerKey: keyBuffer,
       })
 
       // Extract subscription data
@@ -141,7 +156,16 @@ export function usePushNotifications(): UsePushNotificationsReturn {
       setStatus('enabled')
     } catch (err: any) {
       console.error('Error subscribing to push notifications:', err)
-      setError(err.message || 'Failed to subscribe to push notifications')
+      
+      // Provide more helpful error messages
+      let errorMessage = 'Failed to subscribe to push notifications'
+      if (err.code === 'ERR_NETWORK' || err.message?.includes('Network Error')) {
+        errorMessage = 'Cannot connect to server. Please ensure the backend server is running and accessible.'
+      } else if (err.message) {
+        errorMessage = err.message
+      }
+      
+      setError(errorMessage)
       setStatus('disabled')
     } finally {
       setIsLoading(false)

@@ -527,12 +527,14 @@ class PushSubscriptionViewSet(viewsets.ModelViewSet):
         Get VAPID public key for push notifications.
         """
         from django.conf import settings
-        if not settings.VAPID_PUBLIC_KEY:
+        # Support both old and new variable names for compatibility
+        vapid_public_key = getattr(settings, 'WEBPUSH_VAPID_PUBLIC_KEY', None) or getattr(settings, 'VAPID_PUBLIC_KEY', None)
+        if not vapid_public_key:
             return Response(
                 {'error': 'VAPID public key not configured'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
-        return Response({'public_key': settings.VAPID_PUBLIC_KEY})
+        return Response({'public_key': vapid_public_key})
     
     @action(detail=False, methods=['post'])
     def test(self, request):

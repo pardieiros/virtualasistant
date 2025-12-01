@@ -19,7 +19,8 @@ def _convert_vapid_private_key_to_pem(private_key_b64url: str) -> str:
     try:
         # Decode base64url to bytes
         # Add padding if needed
-        padding = '=' * (4 - (len(private_key_b64url) % 4)) % 4
+        padding_length = (4 - (len(private_key_b64url) % 4)) % 4
+        padding = '=' * padding_length
         base64_str = private_key_b64url.replace('-', '+').replace('_', '/') + padding
         private_key_bytes = base64.b64decode(base64_str)
         
@@ -50,13 +51,18 @@ def send_push_notification(subscription: PushSubscription, title: str, body: str
         body: Notification body text
         data: Optional data payload
     """
-    if not settings.VAPID_PUBLIC_KEY or not settings.VAPID_PRIVATE_KEY:
+    # Support both WEBPUSH_* and VAPID_* variable names for compatibility
+    vapid_public_key = getattr(settings, 'WEBPUSH_VAPID_PUBLIC_KEY', None) or getattr(settings, 'VAPID_PUBLIC_KEY', None)
+    vapid_private_key = getattr(settings, 'WEBPUSH_VAPID_PRIVATE_KEY', None) or getattr(settings, 'VAPID_PRIVATE_KEY', None)
+    vapid_email = getattr(settings, 'WEBPUSH_VAPID_SUB', None) or getattr(settings, 'VAPID_EMAIL', None)
+    
+    if not vapid_public_key or not vapid_private_key:
         error_msg = "VAPID keys not configured"
         logger.error(error_msg)
         raise ValueError(error_msg)
     
-    if not settings.VAPID_EMAIL:
-        error_msg = "VAPID_EMAIL not configured"
+    if not vapid_email:
+        error_msg = "VAPID email/sub not configured"
         logger.error(error_msg)
         raise ValueError(error_msg)
     
@@ -78,7 +84,7 @@ def send_push_notification(subscription: PushSubscription, title: str, body: str
     
     try:
         # Convert VAPID private key from base64url to PEM format
-        vapid_private_key_pem = _convert_vapid_private_key_to_pem(settings.VAPID_PRIVATE_KEY)
+        vapid_private_key_pem = _convert_vapid_private_key_to_pem(vapid_private_key)
         
         logger.debug(f"Sending push notification to subscription {subscription.id}, endpoint: {subscription.endpoint[:50]}...")
         webpush(
@@ -86,7 +92,7 @@ def send_push_notification(subscription: PushSubscription, title: str, body: str
             data=json.dumps(payload),
             vapid_private_key=vapid_private_key_pem,
             vapid_claims={
-                "sub": settings.VAPID_EMAIL
+                "sub": vapid_email
             }
         )
         logger.info(f"Push notification sent successfully to subscription {subscription.id}")

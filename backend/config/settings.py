@@ -203,9 +203,15 @@ CELERY_BEAT_SCHEDULE = {
 }
 
 # VAPID Keys for Web Push Notifications
-VAPID_PUBLIC_KEY = os.getenv('VAPID_PUBLIC_KEY', '')
-VAPID_PRIVATE_KEY = os.getenv('VAPID_PRIVATE_KEY', '')
-VAPID_EMAIL = os.getenv('VAPID_EMAIL', 'mailto:admin@example.com')
+# Support both WEBPUSH_* and VAPID_* variable names for compatibility
+WEBPUSH_VAPID_PUBLIC_KEY = os.getenv('WEBPUSH_VAPID_PUBLIC_KEY', os.getenv('VAPID_PUBLIC_KEY', ''))
+WEBPUSH_VAPID_PRIVATE_KEY = os.getenv('WEBPUSH_VAPID_PRIVATE_KEY', os.getenv('VAPID_PRIVATE_KEY', ''))
+WEBPUSH_VAPID_SUB = os.getenv('WEBPUSH_VAPID_SUB', os.getenv('VAPID_EMAIL', 'mailto:admin@example.com'))
+
+# Legacy support (deprecated, use WEBPUSH_* variables instead)
+VAPID_PUBLIC_KEY = WEBPUSH_VAPID_PUBLIC_KEY
+VAPID_PRIVATE_KEY = WEBPUSH_VAPID_PRIVATE_KEY
+VAPID_EMAIL = WEBPUSH_VAPID_SUB
 
 # TTS (Text-to-Speech) Configuration
 TTS_SERVICE_URL = os.getenv('TTS_SERVICE_URL', 'http://192.168.1.73:8010/api/tts/')

@@ -66,12 +66,23 @@ export async function subscribeToPushNotifications(): Promise<PushSubscriptionDa
     }
 
     // Convert VAPID key from base64 URL-safe to Uint8Array
+    // The key should be 65 bytes (0x04 prefix + 32 bytes X + 32 bytes Y)
     const keyArray = urlBase64ToUint8Array(vapidPublicKey);
     
+    // Validate key length (should be 65 bytes for uncompressed P-256 public key)
+    if (keyArray.length !== 65) {
+      throw new Error(
+        `Invalid VAPID public key length: expected 65 bytes, got ${keyArray.length}. ` +
+        `Please regenerate VAPID keys using the updated script.`
+      );
+    }
+    
     // Subscribe to push notifications
+    // Create a new ArrayBuffer to ensure proper type compatibility
+    const keyBuffer = new Uint8Array(keyArray).buffer;
     const subscription = await registration.pushManager.subscribe({
       userVisibleOnly: true,
-      applicationServerKey: keyArray as BufferSource,
+      applicationServerKey: keyBuffer,
     });
 
     // Convert subscription to format expected by backend

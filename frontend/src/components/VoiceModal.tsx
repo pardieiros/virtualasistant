@@ -20,34 +20,82 @@ const VoiceModal = ({ isOpen, onClose, onTranscript }: VoiceModalProps) => {
   const { transcript, isListening, error, audioLevel, startListening, stopListening } = useVoiceRecognition();
   const userId = getUserIdFromToken();
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const isProcessingRef = useRef<boolean>(false); // Flag to prevent duplicate processing
+  const messagesRef = useRef<ChatMessage[]>([]); // Ref to track current messages
+  const isOpenRef = useRef(isOpen); // Ref to track if modal is open
+  
+  // Keep ref in sync with prop
+  useEffect(() => {
+    isOpenRef.current = isOpen;
+  }, [isOpen]);
 
   useEffect(() => {
     if (messages.length > 0) {
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
+    messagesRef.current = messages; // Keep ref in sync
   }, [messages]);
 
   const handleVoiceInputRef = useRef<(text: string) => Promise<void>>();
 
   const handleVoiceInput = useCallback(async (text: string) => {
-    if (!text.trim()) return;
+    if (!text.trim()) {
+      return;
+    }
     
+    // Prevent duplicate processing
+    if (isProcessingRef.current) {
+      return;
+    }
+    
+    isProcessingRef.current = true;
     setLoading(true);
 
     const userMessage = text.trim();
+    
+    // Add user message to state
     setMessages((prev) => {
       const newMessages = [...prev, { role: 'user' as const, content: userMessage }];
       onTranscript(userMessage);
-      
+      return newMessages;
+    });
+    
+    try {
+      // Get current messages for context
+      const currentMessages = messagesRef.current;
       // Send to backend
-      chatAPI.send(userMessage, prev).then((response) => {
-        setMessages((newPrev) => [
-          ...newPrev,
-          { role: 'assistant' as const, content: response.reply },
-        ]);
-
-        if (voiceEnabled) {
-          speak(response.reply, voiceEnabled).then(() => {
+      const response = await chatAPI.send(userMessage, currentMessages);
+      
+      // Check if search is in progress
+      if (response.search_in_progress) {
+        // Don't add message yet, wait for Pusher update
+        setLoading(true);
+      } else if (response.via_pusher) {
+        // Message is coming via Pusher - don't add from HTTP response
+        // Just keep loading state, Pusher will handle the message
+        console.log('[VoiceModal] Message will come via Pusher, skipping HTTP response');
+        setLoading(true);
+      } else if (response.reply) {
+        // Message not via Pusher - add from HTTP response
+        // But check if it was already added via Pusher (race condition)
+        const replyText = response.reply; // TypeScript now knows this is not null
+        let messageWasAdded = false;
+        setMessages((prev) => {
+          // Check if this message was already added via Pusher
+          const alreadyExists = prev.some(
+            (msg) => msg.role === 'assistant' && msg.content === replyText
+          );
+          if (alreadyExists) {
+            console.log('[VoiceModal] Message already exists from Pusher, skipping HTTP response');
+            return prev;
+          }
+          messageWasAdded = true;
+          return [...prev, { role: 'assistant' as const, content: replyText }];
+        });
+        
+        // Only speak if we actually added the message (not from Pusher)
+        if (messageWasAdded && voiceEnabled) {
+          speak(replyText, voiceEnabled).then(() => {
             // After assistant finishes speaking, restart listening if conversation is active
             if (conversationActive && !isListening) {
               setTimeout(() => {
@@ -60,24 +108,28 @@ const VoiceModal = ({ isOpen, onClose, onTranscript }: VoiceModalProps) => {
             handleVoiceInputRef.current && startListening(handleVoiceInputRef.current);
           }, 500);
         }
-        setLoading(false);
-      }).catch((error: any) => {
-        console.error('Chat error:', error);
-        setMessages((newPrev) => [
-          ...newPrev,
-          { role: 'assistant' as const, content: 'Desculpa, encontrei um erro. Por favor tenta novamente.' },
-        ]);
-        // Restart listening even on error if conversation is active
-        if (conversationActive && !isListening) {
-          setTimeout(() => {
-            handleVoiceInputRef.current && startListening(handleVoiceInputRef.current);
-          }, 1000);
-        }
-        setLoading(false);
-      });
-      
-      return newMessages;
-    });
+      } else if (conversationActive && !isListening) {
+        // If no reply and conversation is active, restart listening
+        setTimeout(() => {
+          handleVoiceInputRef.current && startListening(handleVoiceInputRef.current);
+        }, 500);
+      }
+    } catch (error: any) {
+      console.error('Chat error:', error);
+      setMessages((prev) => [
+        ...prev,
+        { role: 'assistant' as const, content: 'Desculpa, encontrei um erro. Por favor tenta novamente.' },
+      ]);
+      // Restart listening even on error if conversation is active
+      if (conversationActive && !isListening) {
+        setTimeout(() => {
+          handleVoiceInputRef.current && startListening(handleVoiceInputRef.current);
+        }, 1000);
+      }
+    } finally {
+      setLoading(false);
+      isProcessingRef.current = false;
+    }
   }, [voiceEnabled, conversationActive, isListening, startListening, onTranscript]);
 
   // Update ref when function changes
@@ -85,29 +137,158 @@ const VoiceModal = ({ isOpen, onClose, onTranscript }: VoiceModalProps) => {
     handleVoiceInputRef.current = handleVoiceInput;
   }, [handleVoiceInput]);
 
-  usePusher(userId || 0, async (event, data) => {
+  // Stable callback for Pusher messages
+  const handlePusherMessage = useCallback(async (event: string, data: any) => {
+    console.log('[VoiceModal] Pusher event received:', event, data);
+    
     if (event === 'assistant-message') {
-      setMessages((prev) => [
-        ...prev,
-        { role: 'assistant', content: data.message },
-      ]);
-      setLoading(false);
+      const messageType = data.type || 'normal';
+      const status = data.status || 'completed';
       
-      if (voiceEnabled) {
-        await speak(data.message, voiceEnabled);
+      console.log('[VoiceModal] Processing assistant-message:', { messageType, status, message: data.message });
+      
+      if (messageType === 'search_status' && status === 'searching') {
+        console.log('[VoiceModal] Handling search_status searching');
+        // Replace or add searching message
+        setMessages((prev) => {
+          const filtered = prev.filter(
+            (msg) => !(msg.role === 'assistant' && msg.content.includes('🔍 A pesquisar'))
+          );
+          return [...filtered, { role: 'assistant', content: data.message }];
+        });
+        setLoading(true);
+        isProcessingRef.current = true; // Keep processing flag true during search
+        
+        // Only play audio if modal is actually open (use ref to get current value)
+        if (voiceEnabled && isOpenRef.current && data.audio && data.audio_format && data.audio_available !== false) {
+          try {
+            const { playAudioFromBase64 } = await import('../utils/speech');
+            await playAudioFromBase64(data.audio, data.audio_format);
+          } catch (error) {
+            console.error('Error playing audio from Pusher:', error);
+            // Fallback to generating audio
+            await speak(data.message, voiceEnabled);
+          }
+        } else if (voiceEnabled && isOpenRef.current) {
+          // Audio not available - generate locally
+          await speak(data.message, voiceEnabled);
+        }
+      } else if (messageType === 'search_response' && status === 'completed') {
+        console.log('[VoiceModal] Handling search_response completed, message:', data.message);
+        // Replace searching message with final response
+        setMessages((prev) => {
+          const filtered = prev.filter(
+            (msg) => !(msg.role === 'assistant' && msg.content.includes('🔍 A pesquisar'))
+          );
+          // Check if this message was already added
+          const alreadyExists = filtered.some(
+            (msg) => msg.role === 'assistant' && msg.content === data.message
+          );
+          if (alreadyExists) {
+            console.log('[VoiceModal] Message already exists, skipping');
+            return filtered;
+          }
+          const newMessages = [...filtered, { role: 'assistant' as const, content: data.message }];
+          console.log('[VoiceModal] Updated messages after search_response:', newMessages);
+          return newMessages;
+        });
+        setLoading(false);
+        isProcessingRef.current = false; // Reset processing flag
+        
+        // Only play audio if modal is actually open (use ref to get current value)
+        if (voiceEnabled && isOpenRef.current) {
+          // If audio is provided from backend and available, use it; otherwise generate it
+          // audio_available === false means audio was removed due to size limit
+          if (data.audio && data.audio_format && data.audio_available !== false) {
+            try {
+              const { playAudioFromBase64 } = await import('../utils/speech');
+              await playAudioFromBase64(data.audio, data.audio_format).catch(() => {
+                // If audio playback fails (e.g., autoplay blocked), fallback to TTS
+                return speak(data.message, voiceEnabled);
+              });
+            } catch (error) {
+              console.error('Error playing audio from Pusher:', error);
+              // Fallback to generating audio
+              await speak(data.message, voiceEnabled);
+            }
+          } else {
+            // Audio not available or too large - generate locally
+            await speak(data.message, voiceEnabled);
+          }
+        }
         // After assistant finishes speaking, restart listening if conversation is active
         if (conversationActive && !isListening) {
           setTimeout(() => {
             handleVoiceInputRef.current && startListening(handleVoiceInputRef.current);
           }, 500);
         }
-      } else if (conversationActive && !isListening) {
-        setTimeout(() => {
-          handleVoiceInputRef.current && startListening(handleVoiceInputRef.current);
-        }, 500);
+      } else if (messageType === 'search_status' && (status === 'no_results' || status === 'error')) {
+        // Replace searching message with error/no results message
+        setMessages((prev) => {
+          const filtered = prev.filter(
+            (msg) => !(msg.role === 'assistant' && msg.content.includes('🔍 A pesquisar'))
+          );
+          return [...filtered, { role: 'assistant', content: data.message }];
+        });
+        setLoading(false);
+        isProcessingRef.current = false;
+      } else {
+        console.log('[VoiceModal] Handling normal message:', data.message);
+        // Normal message - check if already exists to avoid duplicates
+        setMessages((prev) => {
+          // Check if this message was already added
+          const alreadyExists = prev.some(
+            (msg) => msg.role === 'assistant' && msg.content === data.message
+          );
+          if (alreadyExists) {
+            console.log('[VoiceModal] Message already exists, skipping Pusher message');
+            return prev;
+          }
+          const newMessages = [...prev, { role: 'assistant' as const, content: data.message }];
+          console.log('[VoiceModal] Updated messages after normal message:', newMessages);
+          return newMessages;
+        });
+        setLoading(false);
+        isProcessingRef.current = false; // Reset processing flag
+        
+        // Only play audio if modal is actually open (use ref to get current value)
+        if (voiceEnabled && isOpenRef.current) {
+          // If audio is provided from backend and available, use it; otherwise generate it
+          // audio_available === false means audio was removed due to size limit
+          if (data.audio && data.audio_format && data.audio_available !== false) {
+            try {
+              const { playAudioFromBase64 } = await import('../utils/speech');
+              await playAudioFromBase64(data.audio, data.audio_format).catch(() => {
+                // If audio playback fails (e.g., autoplay blocked), fallback to TTS
+                return speak(data.message, voiceEnabled);
+              });
+            } catch (error) {
+              console.error('Error playing audio from Pusher:', error);
+              // Fallback to generating audio
+              await speak(data.message, voiceEnabled);
+            }
+          } else {
+            // Audio not available or too large - generate locally
+            await speak(data.message, voiceEnabled);
+          }
+          // After assistant finishes speaking, restart listening if conversation is active
+          if (conversationActive && !isListening) {
+            setTimeout(() => {
+              handleVoiceInputRef.current && startListening(handleVoiceInputRef.current);
+            }, 500);
+          }
+        } else if (conversationActive && !isListening) {
+          setTimeout(() => {
+            handleVoiceInputRef.current && startListening(handleVoiceInputRef.current);
+          }, 500);
+        }
       }
+    } else {
+      console.log('[VoiceModal] Received non-assistant-message event:', event);
     }
-  });
+  }, [voiceEnabled, conversationActive, isListening, startListening]);
+
+  usePusher(userId || 0, handlePusherMessage);
 
   const handleStartConversation = () => {
     setConversationActive(true);

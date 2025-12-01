@@ -14,10 +14,16 @@ const Chat = () => {
   const [voiceEnabled, setVoiceEnabled] = useState(true);
   const [continuousMode, setContinuousMode] = useState(false);
   const [voiceModalOpen, setVoiceModalOpen] = useState(false);
+  const voiceModalOpenRef = useRef(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const { transcript, isListening, startListening, stopListening } = useSpeechRecognition();
 
   const userId = getUserIdFromToken();
+
+  // Keep ref in sync with state
+  useEffect(() => {
+    voiceModalOpenRef.current = voiceModalOpen;
+  }, [voiceModalOpen]);
 
   useEffect(() => {
     if (transcript && !isListening && !continuousMode) {
@@ -30,27 +36,157 @@ const Chat = () => {
   }, [messages]);
 
   usePusher(userId || 0, async (event, data) => {
+    console.log('[Chat] Pusher event received:', event, data);
+    
     if (event === 'assistant-message') {
-      setMessages((prev) => [
-        ...prev,
-        { role: 'assistant', content: data.message },
-      ]);
-      setLoading(false);
+      const messageType = data.type || 'normal';
+      const status = data.status || 'completed';
       
-      if (voiceEnabled) {
-        await speak(data.message, voiceEnabled);
-        // After assistant finishes speaking, restart listening if in continuous mode
-        if (continuousMode && !isListening) {
+      console.log('[Chat] Processing assistant-message:', { messageType, status, message: data.message });
+      
+      if (messageType === 'search_status' && status === 'searching') {
+        console.log('[Chat] Handling search_status searching');
+        // Replace or add searching message
+        setMessages((prev) => {
+          // Remove any existing searching message
+          const filtered = prev.filter(
+            (msg) => !(msg.role === 'assistant' && msg.content.includes('🔍 A pesquisar'))
+          );
+          return [...filtered, { role: 'assistant', content: data.message, isSearching: true }];
+        });
+        setLoading(true);
+        
+        // Only play audio if VoiceModal is not open (VoiceModal will handle audio when open)
+        // Use ref to get current value (callback may have stale closure)
+        // Play audio if provided and available
+        // audio_available === false means audio was removed due to size limit
+        if (voiceEnabled && !voiceModalOpenRef.current && data.audio && data.audio_format && data.audio_available !== false) {
+          try {
+            const { playAudioFromBase64 } = await import('../utils/speech');
+            await playAudioFromBase64(data.audio, data.audio_format).catch(() => {
+              // If audio playback fails (e.g., autoplay blocked), fallback to TTS
+              return speak(data.message, voiceEnabled);
+            });
+          } catch (error) {
+            console.error('Error playing audio from Pusher:', error);
+            // Fallback to generating audio
+            await speak(data.message, voiceEnabled);
+          }
+        } else if (voiceEnabled && !voiceModalOpenRef.current) {
+          // Audio not available - generate locally
+          await speak(data.message, voiceEnabled);
+        }
+      } else if (messageType === 'search_response' && status === 'completed') {
+        console.log('[Chat] Handling search_response completed, message:', data.message);
+        // Replace searching message with final response
+        setMessages((prev) => {
+          // Remove searching message and add final response
+          const filtered = prev.filter(
+            (msg) => !(msg.role === 'assistant' && msg.isSearching)
+          );
+          const newMessages = [...filtered, { role: 'assistant' as const, content: data.message }];
+          console.log('[Chat] Updated messages after search_response:', newMessages);
+          return newMessages;
+        });
+        setLoading(false);
+        
+        // Only play audio if VoiceModal is not open (VoiceModal will handle audio when open)
+        // Use ref to get current value (callback may have stale closure)
+        if (voiceEnabled && !voiceModalOpenRef.current) {
+          // If audio is provided from backend and available, use it; otherwise generate it
+          // audio_available === false means audio was removed due to size limit
+          if (data.audio && data.audio_format && data.audio_available !== false) {
+            try {
+              const { playAudioFromBase64 } = await import('../utils/speech');
+              await playAudioFromBase64(data.audio, data.audio_format).catch(() => {
+                // If audio playback fails (e.g., autoplay blocked), fallback to TTS
+                return speak(data.message, voiceEnabled);
+              });
+            } catch (error) {
+              console.error('Error playing audio from Pusher:', error);
+              // Fallback to generating audio
+              await speak(data.message, voiceEnabled);
+            }
+          } else {
+            // Audio not available or too large - generate locally
+            await speak(data.message, voiceEnabled);
+          }
+          // After assistant finishes speaking, restart listening if in continuous mode
+          if (continuousMode && !isListening) {
+            setTimeout(() => {
+              startListening(handleVoiceInput);
+            }, 500);
+          }
+        } else if (continuousMode && !isListening && !voiceModalOpenRef.current) {
+          // Only restart listening if VoiceModal is not open
           setTimeout(() => {
             startListening(handleVoiceInput);
           }, 500);
         }
-      } else if (continuousMode && !isListening) {
-        // If voice is disabled but continuous mode is on, restart listening immediately
-        setTimeout(() => {
-          startListening(handleVoiceInput);
-        }, 500);
+      } else if (messageType === 'search_status' && (status === 'no_results' || status === 'error')) {
+        // Replace searching message with error/no results message
+        setMessages((prev) => {
+          const filtered = prev.filter(
+            (msg) => !(msg.role === 'assistant' && msg.isSearching)
+          );
+          return [...filtered, { role: 'assistant', content: data.message }];
+        });
+        setLoading(false);
+      } else {
+        console.log('[Chat] Handling normal message:', data.message);
+        // Normal message - check if already exists to avoid duplicates
+        setMessages((prev) => {
+          // Check if this message was already added
+          const alreadyExists = prev.some(
+            (msg) => msg.role === 'assistant' && msg.content === data.message
+          );
+          if (alreadyExists) {
+            console.log('[Chat] Message already exists, skipping Pusher message');
+            return prev;
+          }
+          const newMessages = [...prev, { role: 'assistant' as const, content: data.message }];
+          console.log('[Chat] Updated messages after normal message:', newMessages);
+          return newMessages;
+        });
+        setLoading(false);
+        
+        // Only play audio if VoiceModal is not open (VoiceModal will handle audio when open)
+        // Use ref to get current value (callback may have stale closure)
+        if (voiceEnabled && !voiceModalOpenRef.current) {
+          // If audio is provided from backend and available, use it; otherwise generate it
+          // audio_available === false means audio was removed due to size limit
+          if (data.audio && data.audio_format && data.audio_available !== false) {
+            try {
+              const { playAudioFromBase64 } = await import('../utils/speech');
+              await playAudioFromBase64(data.audio, data.audio_format).catch(() => {
+                // If audio playback fails (e.g., autoplay blocked), fallback to TTS
+                return speak(data.message, voiceEnabled);
+              });
+            } catch (error) {
+              console.error('Error playing audio from Pusher:', error);
+              // Fallback to generating audio
+              await speak(data.message, voiceEnabled);
+            }
+          } else {
+            // Audio not available or too large - generate locally
+            await speak(data.message, voiceEnabled);
+          }
+          // After assistant finishes speaking, restart listening if in continuous mode
+          if (continuousMode && !isListening) {
+            setTimeout(() => {
+              startListening(handleVoiceInput);
+            }, 500);
+          }
+        } else if (continuousMode && !isListening && !voiceModalOpenRef.current) {
+          // If voice is disabled but continuous mode is on, restart listening immediately
+          // Only if VoiceModal is not open
+          setTimeout(() => {
+            startListening(handleVoiceInput);
+          }, 500);
+        }
       }
+    } else {
+      console.log('[Chat] Received non-assistant-message event:', event);
     }
   });
 
@@ -63,19 +199,45 @@ const Chat = () => {
 
     try {
       const response = await chatAPI.send(userMessage, messages);
-      setMessages((prev) => [
-        ...prev,
-        { role: 'assistant', content: response.reply },
-      ]);
-
-      if (voiceEnabled) {
-        await speak(response.reply, voiceEnabled);
-        // After assistant finishes speaking, restart listening if in continuous mode
-        if (continuousMode && !isListening) {
-          setTimeout(() => {
-            startListening(handleVoiceInput);
-          }, 500);
+      
+      // Check if search is in progress
+      if (response.search_in_progress) {
+        // Don't add message yet, wait for Pusher update
+        setLoading(true);
+      } else if (response.via_pusher) {
+        // Message is coming via Pusher - don't add from HTTP response
+        // Just keep loading state, Pusher will handle the message
+        console.log('[Chat] Message will come via Pusher, skipping HTTP response');
+        setLoading(true);
+      } else if (response.reply) {
+        // Message not via Pusher - add from HTTP response
+        // But check if it was already added via Pusher (race condition)
+        const replyText = response.reply; // TypeScript now knows this is not null
+        let messageWasAdded = false;
+        setMessages((prev) => {
+          // Check if this message was already added via Pusher
+          const alreadyExists = prev.some(
+            (msg) => msg.role === 'assistant' && msg.content === replyText
+          );
+          if (alreadyExists) {
+            console.log('[Chat] Message already exists from Pusher, skipping HTTP response');
+            return prev;
+          }
+          messageWasAdded = true;
+          return [...prev, { role: 'assistant' as const, content: replyText }];
+        });
+        
+        // Only speak if we actually added the message (not from Pusher)
+        if (messageWasAdded && voiceEnabled) {
+          await speak(replyText, voiceEnabled);
         }
+      }
+
+      // After assistant finishes speaking, restart listening if in continuous mode
+      if (continuousMode && !isListening && !response.search_in_progress) {
+        setTimeout(() => {
+          startListening(handleVoiceInput);
+        }, 500);
       } else if (continuousMode && !isListening) {
         // If voice is disabled but continuous mode is on, restart listening immediately
         setTimeout(() => {
@@ -109,19 +271,45 @@ const Chat = () => {
 
     try {
       const response = await chatAPI.send(userMessage, messages);
-      setMessages((prev) => [
-        ...prev,
-        { role: 'assistant', content: response.reply },
-      ]);
-
-      if (voiceEnabled) {
-        await speak(response.reply, voiceEnabled);
-        // After assistant finishes speaking, restart listening if in continuous mode
-        if (continuousMode && !isListening) {
-          setTimeout(() => {
-            startListening(handleVoiceInput);
-          }, 500);
+      
+      // Check if search is in progress
+      if (response.search_in_progress) {
+        // Don't add message yet, wait for Pusher update
+        setLoading(true);
+      } else if (response.via_pusher) {
+        // Message is coming via Pusher - don't add from HTTP response
+        // Just keep loading state, Pusher will handle the message
+        console.log('[Chat] Message will come via Pusher, skipping HTTP response');
+        setLoading(true);
+      } else if (response.reply) {
+        // Message not via Pusher - add from HTTP response
+        // But check if it was already added via Pusher (race condition)
+        const replyText = response.reply; // TypeScript now knows this is not null
+        let messageWasAdded = false;
+        setMessages((prev) => {
+          // Check if this message was already added via Pusher
+          const alreadyExists = prev.some(
+            (msg) => msg.role === 'assistant' && msg.content === replyText
+          );
+          if (alreadyExists) {
+            console.log('[Chat] Message already exists from Pusher, skipping HTTP response');
+            return prev;
+          }
+          messageWasAdded = true;
+          return [...prev, { role: 'assistant' as const, content: replyText }];
+        });
+        
+        // Only speak if we actually added the message (not from Pusher)
+        if (messageWasAdded && voiceEnabled) {
+          await speak(replyText, voiceEnabled);
         }
+      }
+
+      // After assistant finishes speaking, restart listening if in continuous mode
+      if (continuousMode && !isListening && !response.search_in_progress) {
+        setTimeout(() => {
+          startListening(handleVoiceInput);
+        }, 500);
       } else if (continuousMode && !isListening) {
         // If voice is disabled but continuous mode is on, restart listening immediately
         setTimeout(() => {

@@ -16,6 +16,7 @@ const Agenda = () => {
     location: '',
     category: 'personal' as 'personal' | 'work' | 'health' | 'other',
     all_day: false,
+    send_notification: false,
   });
 
   useEffect(() => {
@@ -39,20 +40,37 @@ const Agenda = () => {
     }
   };
 
-  const loadEvents = async () => {
+  const loadEvents = async (showAll: boolean = false) => {
     try {
       setLoading(true);
+      
+      let data;
+      if (showAll) {
+        // Load all events without date filter
+        data = await agendaAPI.list();
+      } else {
+        // Load events for current month
       const now = new Date();
       const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-      const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+        const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
       
-      const data = await agendaAPI.list({
+        data = await agendaAPI.list({
         start_date: startOfMonth.toISOString(),
         end_date: endOfMonth.toISOString(),
       });
-      setEvents(data);
+        
+        // If no events this month, load all events
+        if (data.length === 0) {
+          data = await agendaAPI.list();
+        }
+      }
+      
+      // data is already an array from agendaAPI.list()
+      const eventsList = data;
+      setEvents(eventsList);
     } catch (error) {
       console.error('Error loading events:', error);
+      setEvents([]);
     } finally {
       setLoading(false);
     }
@@ -71,6 +89,7 @@ const Agenda = () => {
         location: '',
         category: 'personal',
         all_day: false,
+        send_notification: false,
       });
       loadEvents();
     } catch (error) {
@@ -99,9 +118,17 @@ const Agenda = () => {
     <div className="p-6 max-w-6xl mx-auto">
       <div className="flex justify-between items-center mb-6">
         <h2 className="text-3xl font-bold text-primary-gold">Agenda</h2>
+        <div className="flex gap-2">
+          <button onClick={() => loadEvents(false)} className="btn-secondary text-sm">
+            This Month
+          </button>
+          <button onClick={() => loadEvents(true)} className="btn-secondary text-sm">
+            All Events
+          </button>
         <button onClick={() => setShowForm(!showForm)} className="btn-primary">
           + Add Event
         </button>
+        </div>
       </div>
 
       {showForm && (
@@ -171,6 +198,7 @@ const Agenda = () => {
                 rows={3}
               />
             </div>
+            <div className="space-y-2">
             <div className="flex items-center gap-2">
               <input
                 type="checkbox"
@@ -179,6 +207,16 @@ const Agenda = () => {
                 className="w-4 h-4"
               />
               <label className="text-text-medium">All day event</label>
+              </div>
+              <div className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={formData.send_notification}
+                  onChange={(e) => setFormData({ ...formData, send_notification: e.target.checked })}
+                  className="w-4 h-4"
+                />
+                <label className="text-text-medium">Send push notification reminder</label>
+              </div>
             </div>
             <div className="flex gap-2">
               <button type="submit" className="btn-primary">
@@ -200,7 +238,8 @@ const Agenda = () => {
         <div className="text-center text-text-medium py-12">Loading...</div>
       ) : events.length === 0 ? (
         <div className="text-center text-text-medium py-12">
-          No events found. Add your first event!
+          <p>No events found.</p>
+          <p className="text-sm mt-2">Add your first event using the button above!</p>
         </div>
       ) : (
         <div className="space-y-4">

@@ -27,6 +27,7 @@ export interface AgendaEvent {
   location: string;
   category: 'personal' | 'work' | 'health' | 'other';
   all_day: boolean;
+  send_notification: boolean;
   created_at: string;
 }
 
@@ -49,16 +50,27 @@ export interface HomeAssistantConfig {
 export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
+  isSearching?: boolean;
 }
 
 export interface ChatResponse {
-  reply: string;
+  reply: string | null;
   action: any;
   action_result: any;
+  search_in_progress?: boolean;
+  via_pusher?: boolean;
 }
 
 export interface TokenResponse {
   access: string;
   refresh: string;
+}
+
+export interface UserNotificationPreferences {
+  agenda_events_enabled: boolean;
+  agenda_reminder_minutes: number;
+  shopping_updates_enabled: boolean;
+  created_at: string;
+  updated_at: string;
 }
 

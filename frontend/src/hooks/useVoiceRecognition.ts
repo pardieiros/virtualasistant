@@ -38,6 +38,15 @@ export const useVoiceRecognition = () => {
   const streamRef = useRef<MediaStream | null>(null);
   const animationFrameRef = useRef<number | null>(null);
   const lastSpeechTimeRef = useRef<number>(0);
+  const lastValidTranscriptTimeRef = useRef<number>(0);
+  const consecutiveNoiseCountRef = useRef<number>(0);
+  const currentInterimTranscriptRef = useRef<string>('');
+  const isSendingRef = useRef<boolean>(false); // Flag to prevent duplicate sends
+  
+  // Noise suppression constants
+  const MIN_AUDIO_LEVEL_FOR_SPEECH = 15; // Minimum audio level to consider as speech (for display only)
+  const MIN_TRANSCRIPT_LENGTH = 1; // Minimum number of characters to consider valid (very permissive)
+  const MAX_CONSECUTIVE_NOISE = 10; // Max consecutive noise detections before ignoring (more permissive)
 
   // Audio level detection
   const startAudioLevelDetection = async () => {
@@ -65,8 +74,9 @@ export const useVoiceRecognition = () => {
         const level = Math.min(100, (average / 255) * 100);
         setAudioLevel(level);
 
-        // Update last speech time if audio level is significant
-        if (level > 10) {
+        // Update last speech time if audio level is detected (for display purposes)
+        // Note: We rely on Speech Recognition API for actual speech detection, not audio level
+        if (level > MIN_AUDIO_LEVEL_FOR_SPEECH) {
           lastSpeechTimeRef.current = Date.now();
         }
 
@@ -115,17 +125,88 @@ export const useVoiceRecognition = () => {
 
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const transcript = event.results[i][0].transcript;
-        if (event.results[i].isFinal) {
+        const isFinal = event.results[i].isFinal;
+        if (isFinal) {
           newFinalTranscript += transcript + ' ';
         } else {
           interimTranscript += transcript;
         }
       }
 
+      // Noise suppression: validate transcript before processing
+      // Very permissive validation - we trust the Speech Recognition API
+      const isValidTranscript = (text: string): boolean => {
+        const trimmed = text.trim();
+        
+        // Basic checks only
+        if (!trimmed || trimmed.length < MIN_TRANSCRIPT_LENGTH) {
+          return false;
+        }
+        
+        // Check for obviously invalid patterns (only very obvious noise)
+        // Reject if it's just a single repeated character (like "aaaa" or "....")
+        if (trimmed.length > 3) {
+          const uniqueChars = new Set(trimmed.toLowerCase().replace(/\s/g, '')).size;
+          if (uniqueChars === 1) {
+            return false;
+          }
+        }
+        
+        return true;
+      };
+
+      // Process final transcripts
       if (newFinalTranscript) {
         const updatedFinal = finalTranscriptRef.current + newFinalTranscript;
         finalTranscriptRef.current = updatedFinal;
         setTranscript(updatedFinal + interimTranscript);
+        lastSpeechTimeRef.current = Date.now();
+        
+        // Validate the complete accumulated transcript
+        const completeText = updatedFinal.trim();
+        const isCompleteValid = isValidTranscript(completeText);
+        
+        if (isCompleteValid) {
+          lastValidTranscriptTimeRef.current = Date.now();
+          consecutiveNoiseCountRef.current = 0; // Reset noise counter on valid transcript
+          
+          // Clear any existing timeout
+          if (silenceTimeoutRef.current) {
+            clearTimeout(silenceTimeoutRef.current);
+          }
+          
+          // For final results, send after a shorter delay (1 second) to allow for more final results
+          silenceTimeoutRef.current = setTimeout(() => {
+            if (!isSendingRef.current) {
+              const timeSinceLastSpeech = Date.now() - lastSpeechTimeRef.current;
+              const finalText = finalTranscriptRef.current.trim();
+              
+              if (
+                timeSinceLastSpeech >= 1000 &&
+                onFinalTranscriptRef.current && 
+                finalText &&
+                isValidTranscript(finalText)
+              ) {
+                isSendingRef.current = true;
+                onFinalTranscriptRef.current(finalText);
+                finalTranscriptRef.current = '';
+                currentInterimTranscriptRef.current = '';
+                setTranscript('');
+                // Reset flag after a short delay
+                setTimeout(() => {
+                  isSendingRef.current = false;
+                }, 500);
+              }
+            }
+          }, 1000);
+        } else {
+          // Invalid transcript (likely noise) - increment counter
+          consecutiveNoiseCountRef.current += 1;
+        }
+      } else if (interimTranscript) {
+        // Update display with interim transcript
+        currentInterimTranscriptRef.current = interimTranscript;
+        setTranscript(finalTranscriptRef.current + interimTranscript);
         lastSpeechTimeRef.current = Date.now();
         
         // Clear any existing timeout
@@ -133,18 +214,47 @@ export const useVoiceRecognition = () => {
           clearTimeout(silenceTimeoutRef.current);
         }
         
-        // Set timeout to detect end of speech (2 seconds of silence)
+        // For interim results, wait longer (2 seconds) before sending
         silenceTimeoutRef.current = setTimeout(() => {
+          if (!isSendingRef.current) {
           const timeSinceLastSpeech = Date.now() - lastSpeechTimeRef.current;
-          // Only send if we haven't heard speech in the last 2 seconds
-          if (timeSinceLastSpeech >= 2000 && onFinalTranscriptRef.current && updatedFinal.trim()) {
-            onFinalTranscriptRef.current(updatedFinal.trim());
+            // Get the current transcript (final + interim if available)
+            const finalText = (finalTranscriptRef.current + currentInterimTranscriptRef.current).trim();
+            
+            // Only send if:
+            // 1. We haven't heard speech in the last 2 seconds
+            // 2. We have text
+            // 3. The transcript passes validation
+            if (
+              timeSinceLastSpeech >= 2000 &&
+              onFinalTranscriptRef.current && 
+              finalText &&
+              isValidTranscript(finalText)
+            ) {
+              isSendingRef.current = true;
+              onFinalTranscriptRef.current(finalText);
+              finalTranscriptRef.current = '';
+              currentInterimTranscriptRef.current = '';
+              setTranscript('');
+              // Reset flag after a short delay
+              setTimeout(() => {
+                isSendingRef.current = false;
+              }, 500);
+            } else if (finalText && !isValidTranscript(finalText)) {
+              // If validation failed, clear the transcript
+              finalTranscriptRef.current = '';
+              currentInterimTranscriptRef.current = '';
+              setTranscript('');
+              consecutiveNoiseCountRef.current = 0;
+            } else if (consecutiveNoiseCountRef.current >= MAX_CONSECUTIVE_NOISE) {
+              // Too many noise detections, clear everything
             finalTranscriptRef.current = '';
+              currentInterimTranscriptRef.current = '';
             setTranscript('');
+              consecutiveNoiseCountRef.current = 0;
+            }
           }
         }, 2000);
-      } else {
-        setTranscript(finalTranscriptRef.current + interimTranscript);
       }
     };
 
@@ -197,8 +307,12 @@ export const useVoiceRecognition = () => {
     if (recognitionRef.current && !isListening) {
       setTranscript('');
       finalTranscriptRef.current = '';
+      currentInterimTranscriptRef.current = '';
       setError(null);
       lastSpeechTimeRef.current = Date.now();
+      lastValidTranscriptTimeRef.current = Date.now();
+      consecutiveNoiseCountRef.current = 0;
+      isSendingRef.current = false;
       setIsListening(true);
       onFinalTranscriptRef.current = onFinalTranscript || null;
       recognitionRef.current.start();

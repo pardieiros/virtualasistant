@@ -6,7 +6,8 @@ import type {
   HomeAssistantConfig,
   ChatMessage,
   ChatResponse,
-  TokenResponse
+  TokenResponse,
+  UserNotificationPreferences
 } from '../types';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api';
@@ -175,6 +176,42 @@ export const pushSubscriptionAPI = {
   
   getVapidPublicKey: async (): Promise<{ public_key: string }> => {
     const response = await apiClient.get('/push-subscriptions/vapid-public-key/');
+    return response.data;
+  },
+};
+
+// Text-to-Speech API
+export const ttsAPI = {
+  /**
+   * Generate speech audio from text using backend TTS service
+   * @param text Text to convert to speech
+   * @returns Audio blob
+   */
+  generate: async (text: string): Promise<Blob> => {
+    const response = await apiClient.post(
+      '/tts/',
+      { text },
+      {
+        responseType: 'blob', // Important: receive as blob
+      }
+    );
+    return response.data;
+  },
+};
+
+// Notification Preferences API
+export const notificationPreferencesAPI = {
+  getPreferences: async (): Promise<UserNotificationPreferences | null> => {
+    try {
+      const response = await apiClient.get('/notification-preferences/my_preferences/');
+      return response.data;
+    } catch {
+      return null;
+    }
+  },
+  
+  updatePreferences: async (preferences: Partial<UserNotificationPreferences>): Promise<UserNotificationPreferences> => {
+    const response = await apiClient.post('/notification-preferences/my_preferences/', preferences);
     return response.data;
   },
 };

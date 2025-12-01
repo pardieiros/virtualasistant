@@ -22,7 +22,12 @@ SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-change-me-in-production')
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.getenv('DEBUG', 'True') == 'True'
 
-ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', 'localhost,127.0.0.1').split(',')
+# ALLOWED_HOSTS: Always include localhost for Nginx proxy, plus any additional hosts from env
+ALLOWED_HOSTS = ['localhost', '127.0.0.1']
+if os.getenv('ALLOWED_HOSTS'):
+    # Add additional hosts from env, avoiding duplicates
+    additional_hosts = [h.strip() for h in os.getenv('ALLOWED_HOSTS').split(',') if h.strip()]
+    ALLOWED_HOSTS.extend([h for h in additional_hosts if h not in ALLOWED_HOSTS])
 
 # Security settings for reverse proxy
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')

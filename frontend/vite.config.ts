@@ -21,18 +21,24 @@ export default defineConfig({
         start_url: '/',
         icons: [
           {
-            src: 'pwa-192x192.png',
+            src: 'personal_assistance_logo.ico',
             sizes: '192x192',
-            type: 'image/png'
+            type: 'image/x-icon'
           },
           {
-            src: 'pwa-512x512.png',
+            src: 'personal_assistance_logo.ico',
             sizes: '512x512',
-            type: 'image/png'
+            type: 'image/x-icon'
           }
         ]
       },
-      strategies: 'generateSW',
+      strategies: 'injectManifest',
+      srcDir: 'public',
+      filename: 'sw.js',
+      injectManifest: {
+        globPatterns: ['**/*.{js,css,html,ico,png,svg}'],
+        injectionPoint: undefined, // Let workbox find self.__WB_MANIFEST automatically
+      },
       workbox: {
         globPatterns: ['**/*.{js,css,html,ico,png,svg}'],
         runtimeCaching: [

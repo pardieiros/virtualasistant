@@ -533,4 +533,51 @@ class PushSubscriptionViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
         return Response({'public_key': settings.VAPID_PUBLIC_KEY})
+    
+    @action(detail=False, methods=['post'])
+    def test(self, request):
+        """
+        Send a test push notification to all user's subscriptions.
+        """
+        from .push_notifications import send_web_push_to_user
+        
+        payload = {
+            'title': 'Test Notification',
+            'body': 'This is a test notification from your Personal Assistant! ✅',
+            'icon': '/personal_assistance_logo.ico',
+            'badge': '/personal_assistance_logo.ico',
+            'url': '/',
+            'tag': 'test-notification',
+            'data': {'type': 'test'},
+        }
+        
+        try:
+            results = send_web_push_to_user(request.user, payload)
+            
+            # Count successes and errors
+            success_count = sum(1 for r in results if r.get('success', False))
+            errors = [r.get('error') for r in results if not r.get('success', False) and r.get('error')]
+            
+            if success_count > 0:
+                return Response({
+                    'success': True,
+                    'message': f'Test notification sent to {success_count} device(s)',
+                    'results': results,
+                    'errors': errors if errors else None
+                }, status=status.HTTP_200_OK)
+            else:
+                return Response({
+                    'success': False,
+                    'message': 'Failed to send test notification',
+                    'results': results,
+                    'errors': errors
+                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        except Exception as e:
+            import logging
+            logger = logging.getLogger('assistant.views')
+            logger.error(f"Error in test notification endpoint: {str(e)}", exc_info=True)
+            return Response(
+                {'success': False, 'error': str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 

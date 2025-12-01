@@ -4,6 +4,25 @@
 // This will be replaced by workbox with the precache manifest
 const manifest = self.__WB_MANIFEST;
 
+// Install event - activate immediately
+self.addEventListener('install', (event) => {
+  self.skipWaiting()
+})
+
+// Activate event - take control of all pages
+self.addEventListener('activate', (event) => {
+  event.waitUntil(
+    caches.keys().then((cacheNames) => {
+      return Promise.all(
+        cacheNames
+          .filter((name) => name.startsWith('workbox-') || name.startsWith('personal-assistant-'))
+          .map((name) => caches.delete(name))
+      )
+    })
+  )
+  return self.clients.claim()
+})
+
 // Service Worker for Push Notifications
 self.addEventListener('push', (event) => {
   let data = {};

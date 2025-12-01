@@ -47,19 +47,15 @@ export const usePusher = (userId: number | null, onMessage: (event: string, data
       ? `${API_BASE_URL}pusher/auth/`
       : `${API_BASE_URL}/pusher/auth/`;
     
-    console.log('Pusher: Initializing connection', {
-      host: SOCKET_HOST,
-      port: SOCKET_PORT,
-      useTLS: SOCKET_USE_TLS,
-      authEndpoint,
-      keyLength: SOCKET_KEY.length,
-    });
+    // Detect if we're using a proxy (domain name instead of localhost/IP)
+    // When using a proxy (like Nginx Proxy Manager), the proxy handles the port redirection
+    // so we must NOT include any port in the Pusher configuration to avoid URLs like wss://domain:6001
+    // Instead, we let the browser use default ports (80 for ws, 443 for wss) which won't appear in the URL
+    const useProxy = SOCKET_HOST !== 'localhost' && !SOCKET_HOST.match(/^\d+\.\d+\.\d+\.\d+$/);
     
-    const pusher = new Pusher(SOCKET_KEY, {
+    // Build base config
+    const pusherConfig: any = {
       cluster: '',
-      wsHost: SOCKET_HOST,
-      wsPort: parseInt(SOCKET_PORT),
-      wssPort: parseInt(SOCKET_PORT),
       httpPath: '/app', // Soketi uses /app as the HTTP path
       enabledTransports: ['ws', 'wss'],
       forceTLS: SOCKET_USE_TLS,
@@ -70,7 +66,40 @@ export const usePusher = (userId: number | null, onMessage: (event: string, data
           Authorization: `Bearer ${localStorage.getItem('access_token')}`,
         },
       },
-    });
+      wsHost: SOCKET_HOST,
+    };
+    
+    // Configure port based on whether we're using a proxy
+    // When using a domain (proxy mode), do NOT set ports at all
+    // This prevents Pusher from including :6001 in the URL (e.g., wss://domain:6001)
+    // The browser will use default ports (80/443) which won't appear in the URL
+    // The proxy (Nginx Proxy Manager) will handle routing to the actual Soketi server
+    if (!useProxy) {
+      // DIRECT CONNECTION MODE: Set port for direct connection to Soketi
+      pusherConfig.wsPort = parseInt(SOCKET_PORT);
+      pusherConfig.wssPort = parseInt(SOCKET_PORT);
+    }
+    // In proxy mode, we intentionally do NOT set wsPort/wssPort
+    // This ensures Pusher uses default ports (80/443) without showing them in the URL
+    
+    // Log connection info (NEVER include port when using proxy - it confuses debugging)
+    // We removed port from log when using proxy because the proxy handles port redirection
+    // and including it in the log makes it seem like we're using a port when we're not
+    const logInfo: any = {
+      host: SOCKET_HOST,
+      useTLS: SOCKET_USE_TLS,
+      useProxy,
+      authEndpoint,
+      keyLength: SOCKET_KEY.length,
+    };
+    // Only include port in log for direct connections (not proxy)
+    // IMPORTANT: Do NOT add port to log when useProxy is true - this was causing confusion
+    if (!useProxy) {
+      logInfo.port = SOCKET_PORT;
+    }
+    console.log('Pusher: Initializing connection', logInfo);
+    
+    const pusher = new Pusher(SOCKET_KEY, pusherConfig);
 
     pusherRef.current = pusher;
 

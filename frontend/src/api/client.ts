@@ -175,7 +175,12 @@ export const pushSubscriptionAPI = {
   },
   
   getVapidPublicKey: async (): Promise<{ public_key: string }> => {
-    const response = await apiClient.get('/push-subscriptions/vapid-public-key/');
+    const response = await apiClient.get('/push-subscriptions/vapid_public_key/');
+    return response.data;
+  },
+  
+  test: async (): Promise<{ success: boolean; message: string; errors?: string[] }> => {
+    const response = await apiClient.post('/push-subscriptions/test/', {});
     return response.data;
   },
 };

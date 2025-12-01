@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { homeAssistantAPI, notificationPreferencesAPI } from '../api/client';
 import type { HomeAssistantConfig, UserNotificationPreferences } from '../types';
+import { usePushNotifications } from '../hooks/usePushNotifications';
 
 const Settings = () => {
   const [haConfig, setHaConfig] = useState<HomeAssistantConfig | null>(null);
@@ -8,6 +9,9 @@ const Settings = () => {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [savingNotif, setSavingNotif] = useState(false);
+  
+  // Use push notifications hook
+  const { status, isLoading: pushLoading, error: pushError, subscribe, testNotification } = usePushNotifications();
   const [formData, setFormData] = useState({
     base_url: '',
     long_lived_token: '',
@@ -89,6 +93,27 @@ const Settings = () => {
     }
   };
 
+  const handleEnableNotifications = async () => {
+    try {
+      await subscribe();
+      alert('Notifications enabled successfully!');
+    } catch (error: any) {
+      console.error('Error enabling notifications:', error);
+      alert(error.message || 'Failed to enable notifications. Please try again.');
+    }
+  };
+
+  const handleTestNotification = async () => {
+    try {
+      await testNotification();
+      alert('Test notification sent successfully!');
+    } catch (error: any) {
+      console.error('Error testing notification:', error);
+      const errorMessage = error.response?.data?.error || error.message || 'Error testing notification';
+      alert(errorMessage);
+    }
+  };
+
   if (loading) {
     return (
       <div className="p-6">
@@ -161,6 +186,53 @@ const Settings = () => {
           Configure when and how you want to receive push notifications.
         </p>
 
+        {/* Notification Status and Enable Button */}
+        <div className="mb-6 p-4 bg-dark-warm-gray rounded-lg border border-border">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-text-light font-medium">Notification Status</span>
+            {status === 'loading' ? (
+              <span className="text-text-medium text-sm">Checking...</span>
+            ) : status === 'enabled' ? (
+              <span className="text-green-400 text-sm">✓ Enabled</span>
+            ) : status === 'blocked' ? (
+              <span className="text-red-400 text-sm">✗ Blocked</span>
+            ) : status === 'unsupported' ? (
+              <span className="text-red-400 text-sm">✗ Unsupported</span>
+            ) : (
+              <span className="text-red-400 text-sm">✗ Not Enabled</span>
+            )}
+          </div>
+          {pushError && (
+            <div className="mt-2 p-2 bg-red-900/20 border border-red-500/30 rounded text-sm text-red-400">
+              {pushError}
+            </div>
+          )}
+          {status === 'disabled' && (
+            <div className="mt-3">
+              <button
+                onClick={handleEnableNotifications}
+                disabled={pushLoading}
+                className="btn-primary w-full"
+              >
+                {pushLoading ? 'Enabling...' : 'Enable Push Notifications'}
+              </button>
+              <p className="text-xs text-text-medium mt-2">
+                Click to enable push notifications in your browser. You'll be asked to grant permission.
+              </p>
+            </div>
+          )}
+          {status === 'blocked' && (
+            <div className="mt-3 p-3 bg-yellow-900/20 border border-yellow-500/30 rounded text-sm text-yellow-400">
+              Push notifications are blocked. Please enable them in your browser settings.
+            </div>
+          )}
+          {status === 'unsupported' && (
+            <div className="mt-3 p-3 bg-red-900/20 border border-red-500/30 rounded text-sm text-red-400">
+              Your browser does not support push notifications.
+            </div>
+          )}
+        </div>
+
         <form onSubmit={handleSaveNotifications} className="space-y-4">
           <div className="space-y-4">
             <div className="flex items-center gap-2">
@@ -206,6 +278,22 @@ const Settings = () => {
           <button type="submit" disabled={savingNotif} className="btn-primary">
             {savingNotif ? 'Saving...' : 'Save Notification Preferences'}
           </button>
+
+          {status === 'enabled' && (
+            <div className="mt-4 pt-4 border-t border-border">
+              <button 
+                type="button" 
+                onClick={handleTestNotification} 
+                disabled={pushLoading}
+                className="btn-secondary"
+              >
+                {pushLoading ? 'Sending...' : 'Test Push Notification'}
+              </button>
+              <p className="text-xs text-text-medium mt-2">
+                Send a test notification to verify that push notifications are working correctly.
+              </p>
+            </div>
+          )}
         </form>
       </div>
 
@@ -216,6 +304,7 @@ const Settings = () => {
           <p>Built with Django, React, and Ollama</p>
         </div>
       </div>
+
     </div>
   );
 };

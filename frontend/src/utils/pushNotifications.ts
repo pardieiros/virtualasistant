@@ -46,8 +46,18 @@ export async function subscribeToPushNotifications(): Promise<PushSubscriptionDa
   }
 
   try {
-    // Register service worker if not already registered
-    const registration = await navigator.serviceWorker.ready;
+    // Ensure service worker is registered and ready
+    let registration = await navigator.serviceWorker.getRegistration();
+    
+    if (!registration) {
+      // Service worker not registered yet, register it
+      registration = await navigator.serviceWorker.register('/sw.js', { scope: '/' });
+      // Wait for it to be ready
+      await navigator.serviceWorker.ready;
+    } else {
+      // Wait for existing registration to be ready
+      await navigator.serviceWorker.ready;
+    }
     
     // Get VAPID public key
     const vapidPublicKey = await getVapidPublicKey();
@@ -55,11 +65,13 @@ export async function subscribeToPushNotifications(): Promise<PushSubscriptionDa
       throw new Error('VAPID public key not available');
     }
 
-    // Subscribe to push notifications
+    // Convert VAPID key from base64 URL-safe to Uint8Array
     const keyArray = urlBase64ToUint8Array(vapidPublicKey);
+    
+    // Subscribe to push notifications
     const subscription = await registration.pushManager.subscribe({
       userVisibleOnly: true,
-      applicationServerKey: keyArray as unknown as BufferSource,
+      applicationServerKey: keyArray as BufferSource,
     });
 
     // Convert subscription to format expected by backend
@@ -86,7 +98,16 @@ export async function subscribeToPushNotifications(): Promise<PushSubscriptionDa
  */
 export async function unsubscribeFromPushNotifications(endpoint: string): Promise<void> {
   try {
-    const registration = await navigator.serviceWorker.ready;
+    // Ensure service worker is registered
+    let registration = await navigator.serviceWorker.getRegistration();
+    
+    if (!registration) {
+      // Service worker not registered, nothing to unsubscribe
+      return;
+    }
+    
+    // Wait for it to be ready
+    registration = await navigator.serviceWorker.ready;
     const subscription = await registration.pushManager.getSubscription();
     
     if (subscription && subscription.endpoint === endpoint) {
@@ -109,7 +130,16 @@ export async function isSubscribedToPushNotifications(): Promise<boolean> {
   }
 
   try {
-    const registration = await navigator.serviceWorker.ready;
+    // Ensure service worker is registered
+    let registration = await navigator.serviceWorker.getRegistration();
+    
+    if (!registration) {
+      // Service worker not registered yet
+      return false;
+    }
+    
+    // Wait for it to be ready
+    registration = await navigator.serviceWorker.ready;
     const subscription = await registration.pushManager.getSubscription();
     return subscription !== null;
   } catch (error) {

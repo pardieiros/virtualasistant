@@ -66,6 +66,7 @@ const Login = () => {
                 onChange={(e) => setPassword(e.target.value)}
                 className="input-field w-full"
                 required
+                autoComplete="current-password"
               />
             </div>
             

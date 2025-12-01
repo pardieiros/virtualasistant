@@ -1,11 +1,45 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Outlet, Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import NotificationPermissionModal from '../components/NotificationPermissionModal';
+import { isSubscribedToPushNotifications } from '../utils/pushNotifications';
 
 const Dashboard = () => {
   const { logout } = useAuth();
   const location = useLocation();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(true);
+  const [showNotificationModal, setShowNotificationModal] = useState(false);
+
+  useEffect(() => {
+    // Check if we should show the notification permission modal
+    const checkNotificationPermission = async () => {
+      // Check if user has already dismissed the modal
+      const dismissed = localStorage.getItem('notification_permission_dismissed');
+      if (dismissed === 'true') {
+        return;
+      }
+
+      // Check if browser supports notifications
+      if (!('Notification' in window) || !('serviceWorker' in navigator)) {
+        return;
+      }
+
+      // Check if user is already subscribed
+      try {
+        const isSubscribed = await isSubscribedToPushNotifications();
+        if (!isSubscribed) {
+          // Show modal after a short delay
+          setTimeout(() => {
+            setShowNotificationModal(true);
+          }, 2000);
+        }
+      } catch (error) {
+        console.error('Error checking notification subscription:', error);
+      }
+    };
+
+    checkNotificationPermission();
+  }, []);
 
   const navItems = [
     { path: '/', label: 'Chat', icon: '💬' },
@@ -136,6 +170,15 @@ const Dashboard = () => {
           <Outlet />
         </main>
       </div>
+
+      {/* Notification Permission Modal */}
+      <NotificationPermissionModal
+        isOpen={showNotificationModal}
+        onClose={() => setShowNotificationModal(false)}
+        onSuccess={() => {
+          setShowNotificationModal(false);
+        }}
+      />
     </div>
   );
 };

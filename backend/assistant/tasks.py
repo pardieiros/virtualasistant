@@ -3,8 +3,8 @@ from django.utils import timezone
 from datetime import timedelta
 from typing import Dict, Any
 from django.conf import settings
-from .models import AgendaEvent, PushSubscription, UserNotificationPreferences
-from .services.push_notification_service import send_push_notification
+from .models import AgendaEvent, UserNotificationPreferences
+from .push_notifications import send_web_push_to_user
 from .services.web_search_service import search_web, format_search_results
 from .services.pusher_service import publish_to_user
 from .services.ollama_client import call_ollama, build_messages, parse_action
@@ -40,14 +40,8 @@ def check_upcoming_events():
                 continue
             reminder_minutes = preferences.agenda_reminder_minutes
         except UserNotificationPreferences.DoesNotExist:
-            # Default: notifications enabled, 15 minutes reminder
-            reminder_minutes = 15
-        
-        # Get all push subscriptions for this user
-        subscriptions = PushSubscription.objects.filter(user=event.user)
-        
-        if not subscriptions.exists():
-            continue
+            # Default: notifications enabled, 10 minutes reminder
+            reminder_minutes = 10
         
         # Check if we should send notification based on reminder time
         # Calculate minutes until event starts
@@ -66,7 +60,7 @@ def check_upcoming_events():
         
         # Format the notification message
         if event.all_day:
-            time_str = "All day"
+            time_str = "Todo o dia"
         else:
             time_str = event.start_datetime.strftime("%H:%M")
         
@@ -75,22 +69,27 @@ def check_upcoming_events():
             message += f" em {event.location}"
         message += f" às {time_str}"
         
-        # Send notification to all user's subscriptions
-        for subscription in subscriptions:
-            try:
-                send_push_notification(
-                    subscription=subscription,
-                    title="Evento na Agenda",
-                    body=message,
-                    data={
+        # Send notification to all user's subscriptions using send_web_push_to_user
+        try:
+            send_web_push_to_user(
+                user=event.user,
+                payload={
+                    'title': 'Evento na Agenda',
+                    'body': message,
+                    'url': '/agenda',
+                    'tag': 'agenda-reminder',
+                    'data': {
                         'type': 'agenda_event',
                         'event_id': event.id,
                         'title': event.title,
                     }
-                )
-            except Exception as e:
-                # Log error but continue with other subscriptions
-                print(f"Error sending push notification: {e}")
+                }
+            )
+        except Exception as e:
+            # Log error but continue with other events
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Error sending push notification for event {event.id}: {e}")
         
         notified_events.append(event.id)
     

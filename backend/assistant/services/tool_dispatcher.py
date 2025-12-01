@@ -1,8 +1,11 @@
 from typing import Dict, Any, Optional
+import logging
 from django.contrib.auth.models import User
 from datetime import datetime, timezone, timedelta
-from ..models import ShoppingItem, AgendaEvent, Note
+from ..models import ShoppingItem, AgendaEvent, Note, UserNotificationPreferences
 from .homeassistant_client import call_homeassistant_service
+
+logger = logging.getLogger(__name__)
 
 
 def dispatch_tool(tool_name: str, args: Dict[str, Any], user: User) -> Dict[str, Any]:
@@ -54,6 +57,33 @@ def add_shopping_item(args: Dict[str, Any], user: User) -> Dict[str, Any]:
             notes=args.get('notes', ''),
             priority=args.get('priority', 'medium'),
         )
+        
+        # Send push notification if user has shopping updates enabled
+        try:
+            preferences = UserNotificationPreferences.objects.get(user=user)
+            if preferences.shopping_updates_enabled:
+                from ..push_notifications import send_web_push_to_user
+                send_web_push_to_user(
+                    user=user,
+                    payload={
+                        'title': 'Item adicionado à lista de compras',
+                        'body': f'"{item.name}" foi adicionado à tua lista de compras',
+                        'url': '/shopping-list',
+                        'tag': 'shopping-item-added',
+                        'data': {
+                            'type': 'shopping_item',
+                            'item_id': item.id,
+                            'item_name': item.name,
+                        }
+                    }
+                )
+        except UserNotificationPreferences.DoesNotExist:
+            # No preferences set, don't send notification
+            pass
+        except Exception as push_error:
+            # Log error but don't fail the operation
+            logger.warning(f"Failed to send push notification for shopping item: {push_error}")
+        
         return {
             'success': True,
             'message': f'Added "{item.name}" to shopping list',
@@ -154,8 +184,36 @@ def add_agenda_event(args: Dict[str, Any], user: User) -> Dict[str, Any]:
             location=args.get('location', ''),
             category=args.get('category', 'personal'),
             all_day=args.get('all_day', False),
-            send_notification=args.get('send_notification', False),
+            send_notification=args.get('send_notification', True),  # Default to True when added by Ollama
         )
+        
+        # Send immediate push notification when event is added
+        try:
+            from ..push_notifications import send_web_push_to_user
+            time_str = "Todo o dia" if event.all_day else event.start_datetime.strftime("%H:%M")
+            message = f'Evento "{event.title}" adicionado à agenda'
+            if event.location:
+                message += f' em {event.location}'
+            message += f' às {time_str}'
+            
+            send_web_push_to_user(
+                user=user,
+                payload={
+                    'title': 'Evento adicionado à agenda',
+                    'body': message,
+                    'url': '/agenda',
+                    'tag': 'agenda-event-added',
+                    'data': {
+                        'type': 'agenda_event',
+                        'event_id': event.id,
+                        'title': event.title,
+                    }
+                }
+            )
+        except Exception as push_error:
+            # Log error but don't fail the operation
+            logger.warning(f"Failed to send push notification for agenda event: {push_error}")
+        
         return {
             'success': True,
             'message': f'Added event "{event.title}" to agenda',
@@ -178,6 +236,29 @@ def save_note(args: Dict[str, Any], user: User) -> Dict[str, Any]:
             user=user,
             text=args.get('text', ''),
         )
+        
+        # Send push notification when note is saved
+        try:
+            from ..push_notifications import send_web_push_to_user
+            # Truncate note text for notification (max 100 chars)
+            note_preview = note.text[:100] + ('...' if len(note.text) > 100 else '')
+            send_web_push_to_user(
+                user=user,
+                payload={
+                    'title': 'Nota guardada',
+                    'body': note_preview,
+                    'url': '/notes',
+                    'tag': 'note-saved',
+                    'data': {
+                        'type': 'note',
+                        'note_id': note.id,
+                    }
+                }
+            )
+        except Exception as push_error:
+            # Log error but don't fail the operation
+            logger.warning(f"Failed to send push notification for note: {push_error}")
+        
         return {
             'success': True,
             'message': 'Note saved',

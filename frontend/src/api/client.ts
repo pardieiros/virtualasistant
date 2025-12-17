@@ -7,7 +7,10 @@ import type {
   ChatMessage,
   ChatResponse,
   TokenResponse,
-  UserNotificationPreferences
+  UserNotificationPreferences,
+  TerminalAPIConfig,
+  Conversation,
+  ConversationMessage
 } from '../types';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api';
@@ -141,8 +144,8 @@ export const notesAPI = {
 
 // Chat API
 export const chatAPI = {
-  send: async (message: string, history: ChatMessage[] = []): Promise<ChatResponse> => {
-    const response = await apiClient.post('/chat/', { message, history });
+  send: async (message: string, history: ChatMessage[] = [], conversationId?: number): Promise<ChatResponse> => {
+    const response = await apiClient.post('/chat/', { message, history, conversation_id: conversationId });
     return response.data;
   },
 };
@@ -161,6 +164,40 @@ export const homeAssistantAPI = {
   updateConfig: async (config: Partial<HomeAssistantConfig>): Promise<HomeAssistantConfig> => {
     const response = await apiClient.post('/homeassistant/my_config/', config);
     return response.data;
+  },
+  
+  getAreasAndDevices: async (): Promise<any> => {
+    const response = await apiClient.get('/homeassistant/areas_and_devices/');
+    return response.data;
+  },
+  
+  controlDevice: async (entityId: string, domain: string, service: string, data?: any): Promise<any> => {
+    const response = await apiClient.post('/homeassistant/control_device/', {
+      entity_id: entityId,
+      domain,
+      service,
+      data: data || {},
+    });
+    return response.data;
+  },
+  
+  getDeviceAliases: async (): Promise<any[]> => {
+    const response = await apiClient.get('/device-aliases/');
+    return response.data;
+  },
+  
+  createDeviceAlias: async (alias: { entity_id: string; alias: string; area?: string }): Promise<any> => {
+    const response = await apiClient.post('/device-aliases/', alias);
+    return response.data;
+  },
+  
+  updateDeviceAlias: async (id: number, alias: Partial<{ alias: string; area: string }>): Promise<any> => {
+    const response = await apiClient.patch(`/device-aliases/${id}/`, alias);
+    return response.data;
+  },
+  
+  deleteDeviceAlias: async (id: number): Promise<void> => {
+    await apiClient.delete(`/device-aliases/${id}/`);
   },
 };
 
@@ -229,6 +266,50 @@ export const notificationPreferencesAPI = {
   updatePreferences: async (preferences: Partial<UserNotificationPreferences>): Promise<UserNotificationPreferences> => {
     const response = await apiClient.post('/notification-preferences/my_preferences/', preferences);
     return response.data;
+  },
+};
+
+// Terminal API Config
+export const terminalAPI = {
+  getConfig: async (): Promise<TerminalAPIConfig | null> => {
+    try {
+      const response = await apiClient.get('/terminal-api/my_config/');
+      return response.data;
+    } catch {
+      return null;
+    }
+  },
+  
+  updateConfig: async (config: Partial<TerminalAPIConfig & { api_token?: string }>): Promise<TerminalAPIConfig> => {
+    const response = await apiClient.post('/terminal-api/my_config/', config);
+    return response.data;
+  },
+};
+
+// Conversations API
+export const conversationsAPI = {
+  list: async (): Promise<Conversation[]> => {
+    const response = await apiClient.get('/conversations/');
+    return response.data.results || response.data;
+  },
+  
+  get: async (id: number): Promise<Conversation> => {
+    const response = await apiClient.get(`/conversations/${id}/`);
+    return response.data;
+  },
+  
+  create: async (title?: string, firstMessage?: string): Promise<Conversation> => {
+    const response = await apiClient.post('/conversations/', { title, first_message: firstMessage });
+    return response.data;
+  },
+  
+  addMessage: async (conversationId: number, role: 'user' | 'assistant', content: string): Promise<ConversationMessage> => {
+    const response = await apiClient.post(`/conversations/${conversationId}/add_message/`, { role, content });
+    return response.data;
+  },
+  
+  delete: async (id: number): Promise<void> => {
+    await apiClient.delete(`/conversations/${id}/`);
   },
 };
 

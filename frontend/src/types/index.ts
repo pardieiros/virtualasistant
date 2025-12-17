@@ -70,6 +70,32 @@ export interface UserNotificationPreferences {
   agenda_events_enabled: boolean;
   agenda_reminder_minutes: number;
   shopping_updates_enabled: boolean;
+  notes_enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TerminalAPIConfig {
+  id: number;
+  api_url: string;
+  enabled: boolean;
+  token_configured: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ConversationMessage {
+  id: number;
+  role: 'user' | 'assistant';
+  content: string;
+  created_at: string;
+}
+
+export interface Conversation {
+  id: number;
+  title: string;
+  message_count: number;
+  messages?: ConversationMessage[];
   created_at: string;
   updated_at: string;
 }

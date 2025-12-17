@@ -119,6 +119,7 @@ class UserNotificationPreferences(models.Model):
     agenda_events_enabled = models.BooleanField(default=True, help_text="Enable notifications for agenda events")
     agenda_reminder_minutes = models.IntegerField(default=15, help_text="Minutes before event to send notification")
     shopping_updates_enabled = models.BooleanField(default=False, help_text="Enable notifications for shopping list updates")
+    notes_enabled = models.BooleanField(default=True, help_text="Enable notifications for notes")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     
@@ -165,4 +166,83 @@ class Memory(models.Model):
     
     def __str__(self):
         return f"Memory {self.id} ({self.user.username}): {self.content[:50]}..."
+
+
+class Conversation(models.Model):
+    """
+    Stores conversation sessions with the assistant.
+    Each conversation can have multiple messages and is searchable via embeddings.
+    """
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='conversations')
+    title = models.CharField(max_length=200, blank=True, help_text="Auto-generated or user-provided title")
+    embedding = VectorField(dimensions=768, null=True, blank=True, help_text="Vector embedding for semantic search")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        ordering = ['-updated_at']
+        indexes = [
+            models.Index(fields=['user', 'updated_at']),
+            models.Index(fields=['user', 'created_at']),
+        ]
+    
+    def __str__(self):
+        return f"Conversation {self.id} ({self.user.username}): {self.title or 'Untitled'}"
+
+
+class ConversationMessage(models.Model):
+    """
+    Individual messages within a conversation.
+    """
+    conversation = models.ForeignKey(Conversation, on_delete=models.CASCADE, related_name='messages')
+    role = models.CharField(max_length=20, choices=[('user', 'User'), ('assistant', 'Assistant')])
+    content = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        ordering = ['created_at']
+        indexes = [
+            models.Index(fields=['conversation', 'created_at']),
+        ]
+    
+    def __str__(self):
+        return f"{self.role} message in conversation {self.conversation.id}"
+
+
+class TerminalAPIConfig(models.Model):
+    """
+    Configuration for Terminal API integration (Proxmox host management).
+    """
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='terminal_api_config')
+    api_url = models.URLField(help_text="URL of the Terminal API service (e.g., http://192.168.1.73:8900)")
+    api_token = models.CharField(max_length=500, help_text="Bearer token for authentication")
+    enabled = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    def __str__(self):
+        return f"Terminal API Config ({self.user.username})"
+
+
+class DeviceAlias(models.Model):
+    """
+    Custom names/aliases for Home Assistant devices.
+    Allows users to assign friendly names to entities for voice commands.
+    """
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='device_aliases')
+    entity_id = models.CharField(max_length=255, help_text="Home Assistant entity ID (e.g., climate.kitchen)")
+    alias = models.CharField(max_length=200, help_text="Friendly name (e.g., 'ar condicionado da cozinha')")
+    area = models.CharField(max_length=200, blank=True, help_text="Area/room name (e.g., 'Cozinha')")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        unique_together = ['user', 'entity_id']
+        indexes = [
+            models.Index(fields=['user', 'area']),
+            models.Index(fields=['user', 'entity_id']),
+        ]
+    
+    def __str__(self):
+        return f"{self.alias} ({self.entity_id}) - {self.user.username}"
 

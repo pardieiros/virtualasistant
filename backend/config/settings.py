@@ -23,7 +23,7 @@ SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-change-me-in-production')
 DEBUG = os.getenv('DEBUG', 'True') == 'True'
 
 # ALLOWED_HOSTS: Always include localhost for Nginx proxy, plus any additional hosts from env
-ALLOWED_HOSTS = ['localhost', '127.0.0.1']
+ALLOWED_HOSTS = ['localhost', '127.0.0.1', 'backend']  # 'backend' for internal Docker network
 if os.getenv('ALLOWED_HOSTS'):
     # Add additional hosts from env, avoiding duplicates
     additional_hosts = [h.strip() for h in os.getenv('ALLOWED_HOSTS').split(',') if h.strip()]
@@ -217,6 +217,7 @@ VAPID_EMAIL = WEBPUSH_VAPID_SUB
 TTS_SERVICE_URL = os.getenv('TTS_SERVICE_URL', 'http://192.168.1.73:8010/api/tts/')
 
 # SearXNG Configuration
+# SearXNG is accessible from Docker containers using the host IP
 SEARXNG_BASE_URL = os.getenv('SEARXNG_BASE_URL', 'http://192.168.1.73:8080')
 
 # Logging Configuration
@@ -225,12 +226,19 @@ LOGGING = {
     'disable_existing_loggers': False,
     'formatters': {
         'verbose': {
-            'format': '{levelname} {asctime} {module} {process:d} {thread:d} {message}',
+            'format': '[{levelname}] {asctime} {name} {module} {funcName}:{lineno} {process:d} {thread:d} - {message}',
             'style': '{',
+            'datefmt': '%Y-%m-%d %H:%M:%S',
+        },
+        'detailed': {
+            'format': '[{levelname}] {asctime} {name} {module}.{funcName}:{lineno} - {message}',
+            'style': '{',
+            'datefmt': '%Y-%m-%d %H:%M:%S',
         },
         'simple': {
             'format': '{levelname} {asctime} {message}',
             'style': '{',
+            'datefmt': '%Y-%m-%d %H:%M:%S',
         },
     },
     'handlers': {
@@ -241,12 +249,18 @@ LOGGING = {
         'file': {
             'class': 'logging.FileHandler',
             'filename': os.path.join(BASE_DIR, 'logs', 'django.log'),
-            'formatter': 'verbose',
+            'formatter': 'detailed',
+        },
+        'error_file': {
+            'class': 'logging.FileHandler',
+            'filename': os.path.join(BASE_DIR, 'logs', 'django_errors.log'),
+            'formatter': 'detailed',
+            'level': 'ERROR',
         },
         'celery_file': {
             'class': 'logging.FileHandler',
             'filename': os.path.join(BASE_DIR, 'logs', 'celery.log'),
-            'formatter': 'verbose',
+            'formatter': 'detailed',
         },
     },
     'root': {
@@ -255,12 +269,32 @@ LOGGING = {
     },
     'loggers': {
         'django': {
+            'handlers': ['console', 'file', 'error_file'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+        'django.request': {
+            'handlers': ['console', 'file', 'error_file'],
+            'level': 'ERROR',
+            'propagate': False,
+        },
+        'django.server': {
             'handlers': ['console', 'file'],
             'level': 'INFO',
             'propagate': False,
         },
-        'assistant': {
+        'django.db.backends': {
             'handlers': ['console', 'file'],
+            'level': 'WARNING',
+            'propagate': False,
+        },
+        'assistant': {
+            'handlers': ['console', 'file', 'error_file'],
+            'level': 'DEBUG',
+            'propagate': False,
+        },
+        'assistant.views': {
+            'handlers': ['console', 'file', 'error_file'],
             'level': 'DEBUG',
             'propagate': False,
         },
@@ -270,7 +304,12 @@ LOGGING = {
             'propagate': False,
         },
         'assistant.services': {
-            'handlers': ['console', 'file', 'celery_file'],
+            'handlers': ['console', 'file', 'error_file'],
+            'level': 'DEBUG',
+            'propagate': False,
+        },
+        'assistant.services.homeassistant_client': {
+            'handlers': ['console', 'file', 'error_file'],
             'level': 'DEBUG',
             'propagate': False,
         },
@@ -281,7 +320,12 @@ LOGGING = {
         },
         'requests': {
             'handlers': ['console', 'file'],
-            'level': 'DEBUG',
+            'level': 'WARNING',
+            'propagate': False,
+        },
+        'requests.packages.urllib3': {
+            'handlers': ['console', 'file'],
+            'level': 'WARNING',
             'propagate': False,
         },
         'celery': {

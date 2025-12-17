@@ -5,6 +5,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+    image: virtualassistant-backend:latest
     env_file:
       - ./backend/.env
     environment:
@@ -12,6 +13,8 @@ services:
     volumes:
       - ./backend:/app
       - backend_static:/app/staticfiles
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - app-network
 
@@ -19,6 +22,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+    image: virtualassistant-backend:latest
     container_name: celeryworker
     env_file:
       - ./backend/.env
@@ -29,6 +33,8 @@ services:
     command: celery -A config.celery worker --loglevel=info
     depends_on:
       - backend
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - app-network
 
@@ -36,6 +42,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+    image: virtualassistant-backend:latest
     container_name: celerybeat
     env_file:
       - ./backend/.env
@@ -55,6 +62,7 @@ services:
       dockerfile: Dockerfile
       args:
         - VITE_API_BASE_URL=${VITE_API_BASE_URL:-/api}
+    image: virtualassistant-frontend:latest
     env_file:
       - ./frontend/.env
     networks:

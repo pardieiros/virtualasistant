@@ -41,14 +41,22 @@ self.addEventListener('push', (event) => {
   const badge = '/personal_assistance_logo.ico';
   const data_payload = data.data || {};
 
+  // Options optimized for notifications to work even with locked screen
   const options = {
     body: body,
     icon: icon,
     badge: badge,
     data: data_payload,
     vibrate: [200, 100, 200],
-    tag: 'personal-assistant-notification',
+    tag: data.tag || 'personal-assistant-notification',
     requireInteraction: false,
+    silent: false,
+    timestamp: Date.now(),
+    // These options ensure notifications work with locked screen
+    renotify: false,
+    persistent: true,
+    // Add actions if needed in the future
+    actions: data.actions || [],
   };
 
   event.waitUntil(

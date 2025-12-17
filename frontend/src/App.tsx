@@ -7,6 +7,7 @@ import ShoppingList from './pages/ShoppingList';
 import Agenda from './pages/Agenda';
 import Notes from './pages/Notes';
 import Settings from './pages/Settings';
+import HomeAssistant from './pages/HomeAssistant';
 
 const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { isAuthenticated, loading } = useAuth();
@@ -40,6 +41,7 @@ function App() {
             <Route path="shopping" element={<ShoppingList />} />
             <Route path="agenda" element={<Agenda />} />
             <Route path="notes" element={<Notes />} />
+            <Route path="homeassistant" element={<HomeAssistant />} />
             <Route path="settings" element={<Settings />} />
           </Route>
         </Routes>

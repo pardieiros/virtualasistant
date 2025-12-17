@@ -8,7 +8,7 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['personal_assistance_logo.ico', 'apple-touch-icon.png', 'mask-icon.svg'],
+      includeAssets: ['personal_assistance_logo.ico', 'personal_assistance_logo_nobg.png', 'apple-touch-icon.png', 'mask-icon.svg'],
       manifest: {
         name: 'Personal Assistant',
         short_name: 'Assistant',
@@ -21,14 +21,16 @@ export default defineConfig({
         start_url: '/',
         icons: [
           {
-            src: 'personal_assistance_logo.ico',
+            src: 'personal_assistance_logo_nobg.png',
             sizes: '192x192',
-            type: 'image/x-icon'
+            type: 'image/png',
+            purpose: 'any maskable'
           },
           {
-            src: 'personal_assistance_logo.ico',
+            src: 'personal_assistance_logo_nobg.png',
             sizes: '512x512',
-            type: 'image/x-icon'
+            type: 'image/png',
+            purpose: 'any maskable'
           }
         ]
       },

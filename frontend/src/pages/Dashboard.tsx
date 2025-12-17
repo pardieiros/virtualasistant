@@ -3,12 +3,14 @@ import { Outlet, Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import NotificationPermissionModal from '../components/NotificationPermissionModal';
 import { isSubscribedToPushNotifications } from '../utils/pushNotifications';
+import { homeAssistantAPI } from '../api/client';
 
 const Dashboard = () => {
   const { logout } = useAuth();
   const location = useLocation();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(true);
   const [showNotificationModal, setShowNotificationModal] = useState(false);
+  const [haEnabled, setHaEnabled] = useState(false);
 
   useEffect(() => {
     // Check if we should show the notification permission modal
@@ -41,11 +43,24 @@ const Dashboard = () => {
     checkNotificationPermission();
   }, []);
 
+  useEffect(() => {
+    const checkHAConfig = async () => {
+      try {
+        const config = await homeAssistantAPI.getConfig();
+        setHaEnabled(config?.enabled || false);
+      } catch (error) {
+        console.error('Error checking HA config:', error);
+      }
+    };
+    checkHAConfig();
+  }, []);
+
   const navItems = [
     { path: '/', label: 'Chat', icon: '💬' },
     { path: '/shopping', label: 'Shopping', icon: '🛒' },
     { path: '/agenda', label: 'Agenda', icon: '📅' },
     { path: '/notes', label: 'Notes', icon: '📝' },
+    ...(haEnabled ? [{ path: '/homeassistant', label: 'Home', icon: '🏠' }] : []),
     { path: '/settings', label: 'Settings', icon: '⚙️' },
   ];
 

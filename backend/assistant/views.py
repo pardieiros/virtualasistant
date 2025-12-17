@@ -7,7 +7,12 @@ from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import filters
 from django.db.models import Q
 
-from .models import ShoppingItem, AgendaEvent, Note, HomeAssistantConfig, PushSubscription, UserNotificationPreferences
+from .models import ShoppingItem, AgendaEvent, Note, HomeAssistantConfig, PushSubscription, UserNotificationPreferences, Conversation, ConversationMessage, TerminalAPIConfig, DeviceAlias
+from .serializers import DeviceAliasSerializer
+from .services.homeassistant_client import (
+    get_homeassistant_states,
+    call_homeassistant_service
+)
 from .serializers import (
     ShoppingItemSerializer,
     AgendaEventSerializer,
@@ -17,12 +22,15 @@ from .serializers import (
     ChatResponseSerializer,
     PushSubscriptionSerializer,
     UserNotificationPreferencesSerializer,
+    ConversationSerializer,
+    ConversationDetailSerializer,
+    ConversationMessageSerializer,
+    TerminalAPIConfigSerializer,
 )
-from .services.ollama_client import build_messages, call_ollama, parse_action
+from .services.ollama_client import handle_user_message
 from .services.tool_dispatcher import dispatch_tool
 from .services.pusher_service import publish_to_user
 from .services.memory_service import extract_memories_from_conversation
-from .tasks import perform_web_search_and_respond
 from .services.tts_service import generate_speech
 from django.conf import settings
 import hmac
@@ -42,13 +50,41 @@ class ShoppingItemViewSet(viewsets.ModelViewSet):
         return ShoppingItem.objects.filter(user=self.request.user)
     
     def perform_create(self, serializer):
-        serializer.save(user=self.request.user)
+        instance = serializer.save(user=self.request.user)
         # Publish update via Soketi
         publish_to_user(
             self.request.user.id,
             'shopping-updated',
             {'action': 'created', 'item': serializer.data}
         )
+        
+        # Send push notification if enabled (async task)
+        try:
+            from .tasks import send_web_push_notification_task
+            from .models import UserNotificationPreferences
+            
+            preferences = UserNotificationPreferences.objects.filter(
+                user=self.request.user
+            ).first()
+            
+            if preferences and preferences.shopping_updates_enabled:
+                payload = {
+                    'title': 'Nova compra adicionada',
+                    'body': f'{instance.name} foi adicionado à lista de compras',
+                    'icon': '/personal_assistance_logo.ico',
+                    'badge': '/personal_assistance_logo.ico',
+                    'url': '/shopping',
+                    'tag': 'shopping-item-created',
+                    'data': {
+                        'type': 'shopping_item',
+                        'item_id': instance.id,
+                    },
+                }
+                send_web_push_notification_task.delay(self.request.user.id, payload)
+        except Exception as e:
+            import logging
+            logger = logging.getLogger('assistant.views')
+            logger.warning(f"Failed to queue push notification for shopping item: {e}")
     
     def perform_update(self, serializer):
         serializer.save()
@@ -97,13 +133,41 @@ class AgendaEventViewSet(viewsets.ModelViewSet):
         return queryset.order_by('start_datetime')
     
     def perform_create(self, serializer):
-        serializer.save(user=self.request.user)
+        instance = serializer.save(user=self.request.user)
         # Publish update via Soketi
         publish_to_user(
             self.request.user.id,
             'agenda-updated',
             {'action': 'created', 'event': serializer.data}
         )
+        
+        # Send push notification if enabled (async task)
+        try:
+            from .tasks import send_web_push_notification_task
+            from .models import UserNotificationPreferences
+            
+            preferences = UserNotificationPreferences.objects.filter(
+                user=self.request.user
+            ).first()
+            
+            if preferences and preferences.agenda_events_enabled:
+                payload = {
+                    'title': 'Novo evento adicionado',
+                    'body': f'{instance.title} foi adicionado à agenda',
+                    'icon': '/personal_assistance_logo.ico',
+                    'badge': '/personal_assistance_logo.ico',
+                    'url': '/agenda',
+                    'tag': 'agenda-event-created',
+                    'data': {
+                        'type': 'agenda_event',
+                        'event_id': instance.id,
+                    },
+                }
+                send_web_push_notification_task.delay(self.request.user.id, payload)
+        except Exception as e:
+            import logging
+            logger = logging.getLogger('assistant.views')
+            logger.warning(f"Failed to queue push notification for agenda event: {e}")
     
     def perform_update(self, serializer):
         serializer.save()
@@ -137,7 +201,38 @@ class NoteViewSet(viewsets.ModelViewSet):
         return Note.objects.filter(user=self.request.user)
     
     def perform_create(self, serializer):
-        serializer.save(user=self.request.user)
+        instance = serializer.save(user=self.request.user)
+        
+        # Send push notification for new note if enabled (async task)
+        try:
+            from .tasks import send_web_push_notification_task
+            from .models import UserNotificationPreferences
+            
+            preferences = UserNotificationPreferences.objects.filter(
+                user=self.request.user
+            ).first()
+            
+            if preferences and preferences.notes_enabled:
+                # Truncate note text for notification body
+                note_text = instance.text[:100] + '...' if len(instance.text) > 100 else instance.text
+                
+                payload = {
+                    'title': 'Nova nota criada',
+                    'body': note_text,
+                    'icon': '/personal_assistance_logo.ico',
+                    'badge': '/personal_assistance_logo.ico',
+                    'url': '/notes',
+                    'tag': 'note-created',
+                    'data': {
+                        'type': 'note',
+                        'note_id': instance.id,
+                    },
+                }
+                send_web_push_notification_task.delay(self.request.user.id, payload)
+        except Exception as e:
+            import logging
+            logger = logging.getLogger('assistant.views')
+            logger.warning(f"Failed to queue push notification for note: {e}")
 
 
 class HomeAssistantConfigViewSet(viewsets.ModelViewSet):
@@ -158,13 +253,240 @@ class HomeAssistantConfigViewSet(viewsets.ModelViewSet):
         )
         
         if request.method == 'POST':
-            serializer = self.get_serializer(config, data=request.data, partial=True)
+            # Handle token separately (don't update if not provided)
+            data = request.data.copy()
+            long_lived_token = data.pop('long_lived_token', None)
+            
+            serializer = self.get_serializer(config, data=data, partial=True)
             serializer.is_valid(raise_exception=True)
             serializer.save()
+            
+            # Only update token if provided (not None and not empty string)
+            if long_lived_token is not None and long_lived_token.strip():
+                config.long_lived_token = long_lived_token.strip()
+                config.save(update_fields=['long_lived_token'])
+            
             return Response(serializer.data)
         
         serializer = self.get_serializer(config)
         return Response(serializer.data)
+    
+    @action(detail=False, methods=['get'])
+    def areas_and_devices(self, request):
+        """Get all areas and devices organized by area."""
+        import logging
+        from collections import defaultdict
+        
+        logger = logging.getLogger('assistant.views')
+        
+        try:
+            logger.info(f"areas_and_devices called by user {request.user.username} (ID: {request.user.id})")
+            
+            # Get current states (entity registry endpoint doesn't exist in HA REST API)
+            logger.debug("Fetching current states from Home Assistant")
+            states_result = get_homeassistant_states(request.user)
+            if not states_result.get('success'):
+                logger.error(f"Failed to get states: {states_result.get('message', 'Unknown error')}")
+                return Response(states_result, status=status.HTTP_400_BAD_REQUEST)
+            
+            states = states_result.get('states', [])
+            logger.debug(f"States retrieved: {len(states)} states")
+            
+            # Get user's aliases (these contain area information)
+            aliases = DeviceAlias.objects.filter(user=request.user)
+            alias_map = {alias.entity_id: alias for alias in aliases}
+            
+            # Organize by area (from aliases) or by domain if no area specified
+            areas_dict = defaultdict(list)
+            no_area_devices = []
+            areas_set = set()
+            
+            for state in states:
+                entity_id = state.get('entity_id', '')
+                if not entity_id:
+                    continue
+                
+                # Get alias if exists
+                alias_obj = alias_map.get(entity_id)
+                
+                # Get friendly name from attributes or use entity_id
+                attributes = state.get('attributes', {})
+                friendly_name = attributes.get('friendly_name') or entity_id.split('.')[-1].replace('_', ' ').title()
+                
+                # Determine area: use alias area if exists
+                if alias_obj and alias_obj.area:
+                    final_area = alias_obj.area
+                    areas_set.add(final_area)
+                else:
+                    # No area assigned - will go to no_area_devices
+                    final_area = None
+                
+                device_info = {
+                    'entity_id': entity_id,
+                    'name': friendly_name,
+                    'alias': alias_obj.alias if alias_obj else None,
+                    'area': final_area or 'Other',
+                    'domain': entity_id.split('.')[0],
+                    'state': state.get('state', 'unknown'),
+                    'attributes': attributes,
+                }
+                
+                if final_area:
+                    areas_dict[final_area].append(device_info)
+                else:
+                    no_area_devices.append(device_info)
+            
+            # Convert areas set to list
+            response_data = {
+                'areas': [
+                    {
+                        'id': area,
+                        'name': area,
+                        'devices': areas_dict.get(area, [])
+                    }
+                    for area in sorted(areas_set)
+                ],
+                'no_area_devices': no_area_devices
+            }
+            
+            logger.info(f"Successfully organized {len(areas_set)} areas with {sum(len(devices) for devices in areas_dict.values())} devices, plus {len(no_area_devices)} devices without area")
+            return Response(response_data)
+            
+        except Exception as e:
+            logger.exception(f"Error in areas_and_devices: {str(e)}", exc_info=True)
+            return Response(
+                {
+                    'success': False,
+                    'message': f'Error processing request: {str(e)}',
+                    'error_type': type(e).__name__
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+    
+    @action(detail=False, methods=['post'])
+    def control_device(self, request):
+        """Control a device (turn on/off, set temperature, etc.)."""
+        entity_id = request.data.get('entity_id')
+        domain = request.data.get('domain')
+        service = request.data.get('service')
+        service_data = request.data.get('data', {})
+        
+        if not entity_id or not domain or not service:
+            return Response(
+                {'error': 'entity_id, domain, and service are required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Add entity_id to service data if not present
+        if 'entity_id' not in service_data:
+            service_data['entity_id'] = entity_id
+        
+        result = call_homeassistant_service(request.user, domain, service, service_data)
+        
+        if result.get('success'):
+            return Response(result, status=status.HTTP_200_OK)
+        else:
+            return Response(result, status=status.HTTP_400_BAD_REQUEST)
+
+
+class TerminalAPIConfigViewSet(viewsets.ModelViewSet):
+    serializer_class = TerminalAPIConfigSerializer
+    permission_classes = [IsAuthenticated]
+    
+    def get_queryset(self):
+        return TerminalAPIConfig.objects.filter(user=self.request.user)
+    
+    def perform_create(self, serializer):
+        serializer.save(user=self.request.user)
+    
+    @action(detail=False, methods=['get', 'post'])
+    def my_config(self, request):
+        """Get or create/update the current user's Terminal API config."""
+        config, created = TerminalAPIConfig.objects.get_or_create(
+            user=request.user
+        )
+        
+        if request.method == 'POST':
+            # Handle token separately (don't update if not provided)
+            data = request.data.copy()
+            api_token = data.get('api_token', '')
+            
+            serializer = self.get_serializer(config, data=data, partial=True)
+            serializer.is_valid(raise_exception=True)
+            
+            # Only update token if provided
+            if api_token:
+                config.api_token = api_token
+            config.api_url = data.get('api_url', config.api_url)
+            config.enabled = data.get('enabled', config.enabled)
+            config.save()
+            
+            return Response(serializer.data)
+        
+        serializer = self.get_serializer(config)
+        return Response(serializer.data)
+
+
+class DeviceAliasViewSet(viewsets.ModelViewSet):
+    serializer_class = DeviceAliasSerializer
+    permission_classes = [IsAuthenticated]
+    
+    def get_queryset(self):
+        return DeviceAlias.objects.filter(user=self.request.user)
+    
+    def perform_create(self, serializer):
+        serializer.save(user=self.request.user)
+
+
+class ConversationViewSet(viewsets.ModelViewSet):
+    serializer_class = ConversationSerializer
+    permission_classes = [IsAuthenticated]
+    filter_backends = [filters.OrderingFilter]
+    ordering_fields = ['created_at', 'updated_at']
+    ordering = ['-updated_at']
+    
+    def get_queryset(self):
+        return Conversation.objects.filter(user=self.request.user)
+    
+    def get_serializer_class(self):
+        if self.action == 'retrieve':
+            return ConversationDetailSerializer
+        return ConversationSerializer
+    
+    def perform_create(self, serializer):
+        conversation = serializer.save(user=self.request.user)
+        
+        # Auto-generate title from first message if provided
+        first_message = self.request.data.get('first_message', '')
+        if first_message and not conversation.title:
+            # Use first 50 chars of first message as title
+            conversation.title = first_message[:50] + ('...' if len(first_message) > 50 else '')
+            conversation.save()
+    
+    @action(detail=True, methods=['post'])
+    def add_message(self, request, pk=None):
+        """Add a message to a conversation."""
+        conversation = self.get_object()
+        role = request.data.get('role', 'user')
+        content = request.data.get('content', '')
+        
+        if not content:
+            return Response(
+                {'error': 'Content is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        message = ConversationMessage.objects.create(
+            conversation=conversation,
+            role=role,
+            content=content
+        )
+        
+        # Update conversation timestamp
+        conversation.save()
+        
+        serializer = ConversationMessageSerializer(message)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 
 class ChatView(APIView):
@@ -179,73 +501,252 @@ class ChatView(APIView):
         
         message = serializer.validated_data['message']
         history = serializer.validated_data.get('history', [])
+        conversation_id = serializer.validated_data.get('conversation_id', None)
         
-        # Build messages for Ollama (with memory retrieval)
-        messages = build_messages(history, message, user=request.user)
+        # If conversation_id is provided, load conversation and add messages to history
+        conversation = None
+        if conversation_id:
+            try:
+                conversation = Conversation.objects.get(id=conversation_id, user=request.user)
+                # Load conversation messages and add to history
+                conv_messages = conversation.messages.all().order_by('created_at')
+                history = [
+                    {'role': msg.role, 'content': msg.content}
+                    for msg in conv_messages
+                ]
+            except Conversation.DoesNotExist:
+                pass
         
         try:
-            # Call Ollama
-            response_text = call_ollama(messages)
+            # Use handle_user_message to orchestrate the LLM call and web search
+            result = handle_user_message(
+                user=request.user,
+                history=history,
+                user_message=message,
+            )
             
-            # Parse action if present
-            action = parse_action(response_text)
+            # Extract results from handle_user_message
+            clean_response = result["reply"]
+            action = result["action"]
+            used_search = result["used_search"]
+            search_results = result["search_results"]
             
-            # Clean response text (remove ACTION line if present)
-            clean_response = response_text
-            if action:
-                lines = response_text.strip().split('\n')
-                clean_lines = [
-                    line for line in lines
-                    if not line.strip().startswith('ACTION:')
-                ]
-                clean_response = '\n'.join(clean_lines).strip()
+            logger.info(
+                f"Jarvas reply generated for user {request.user.id}, "
+                f"action={action.get('tool') if action else None}, "
+                f"used_search={used_search}, "
+                f"conversation_id={conversation_id}"
+            )
             
-            # Check if action is web_search - handle asynchronously
-            if action and action.get('tool') == 'web_search':
-                search_query = action.get('args', {}).get('query', message)
-                
-                logger.info(f"Web search requested for user {request.user.id}, query: {search_query}")
-                
-                try:
-                    # Launch async task for web search
-                    task_result = perform_web_search_and_respond.delay(
-                        user_id=request.user.id,
-                        query=message,
-                        original_message=message,
-                        conversation_history=history,
-                        search_query=search_query
-                    )
-                    logger.info(f"Web search task launched with ID: {task_result.id}")
-                except Exception as e:
-                    logger.error(f"Error launching web search task: {e}", exc_info=True)
-                    # Fallback: return error message
-                    return Response({
-                        'reply': 'Erro ao iniciar pesquisa. Por favor tenta novamente.',
-                        'action': action,
-                        'action_result': {'status': 'error', 'message': str(e)},
-                        'search_in_progress': False
-                    }, status=status.HTTP_200_OK)
-                
-                # Return immediately with a message that search is in progress
-                return Response({
-                    'reply': f'🔍 A pesquisar na internet sobre: "{search_query}"...',
-                    'action': action,
-                    'action_result': {'status': 'searching', 'message': 'Search in progress', 'task_id': task_result.id},
-                    'search_in_progress': True
-                }, status=status.HTTP_200_OK)
-            
-            # Execute other actions synchronously
+            # Execute other actions synchronously (web_search is already handled internally)
             action_result = None
             actions_taken = []
+            tool_name = None  # Initialize outside if block
             if action:
                 tool_name = action.get('tool')
                 tool_args = action.get('args', {})
+                logger.info(
+                    f"Executing tool '{tool_name}' for user {request.user.id} "
+                    f"with args: {tool_args}"
+                )
                 action_result = dispatch_tool(tool_name, tool_args, request.user)
+                logger.info(
+                    f"Tool '{tool_name}' execution completed for user {request.user.id}, "
+                    f"success={action_result.get('success', False)}"
+                )
                 actions_taken.append({
                     'tool': tool_name,
                     'args': tool_args,
                     'result': action_result
                 })
+                
+                # If terminal_command or homeassistant_get_states was executed, make a second LLM call with the result
+                if tool_name == 'terminal_command' or tool_name == 'homeassistant_get_states':
+                    if tool_name == 'terminal_command':
+                        logger.info(
+                            f"Processing terminal_command result for user {request.user.id}, "
+                            f"success={action_result.get('success', False)}, "
+                            f"returncode={action_result.get('returncode', 'N/A')}"
+                        )
+                        from .services.ollama_client import build_messages, call_ollama, strip_action_line
+                        import json
+                        
+                        # Build messages for second call with terminal result
+                        terminal_result_text = ""
+                        if action_result.get('success'):
+                            # Success case
+                            stdout = action_result.get('stdout', '')
+                            stderr = action_result.get('stderr', '')
+                            returncode = action_result.get('returncode', 'N/A')
+                            
+                            logger.debug(
+                                f"Terminal command succeeded for user {request.user.id}, "
+                                f"returncode={returncode}, "
+                                f"stdout_length={len(stdout)}, "
+                                f"stderr_length={len(stderr)}"
+                            )
+                            
+                            if stdout:
+                                terminal_result_text += f"STDOUT:\n{stdout}\n\n"
+                            if stderr:
+                                terminal_result_text += f"STDERR:\n{stderr}\n\n"
+                            if returncode is not None:
+                                terminal_result_text += f"Return code: {returncode}\n"
+                            user_message = (
+                                "Aqui está o resultado do comando que executaste. "
+                                "Responde ao utilizador com base neste resultado, apresentando a informação de forma clara e útil.\n\n"
+                                f"{terminal_result_text}\n\n"
+                                "IMPORTANTE: NÃO uses nenhuma ferramenta nesta resposta. Apenas apresenta os resultados ao utilizador em português de Portugal. "
+                                "NÃO escrevas nenhuma linha ACTION: nesta resposta."
+                            )
+                        else:
+                            # Error case
+                            error_message = action_result.get('message', 'Unknown error')
+                            stderr = action_result.get('stderr', '')
+                            returncode = action_result.get('returncode', 'N/A')
+                            
+                            logger.warning(
+                                f"Terminal command failed for user {request.user.id}, "
+                                f"error={error_message}, "
+                                f"returncode={returncode}, "
+                                f"stderr={stderr[:200] if stderr else 'N/A'}"
+                            )
+                            
+                            terminal_result_text = f"ERRO ao executar o comando:\n{error_message}\n"
+                            if stderr:
+                                terminal_result_text += f"STDERR: {stderr}\n"
+                            user_message = (
+                                "Ocorreu um erro ao tentar executar o comando do terminal. "
+                                "Informa o utilizador sobre o erro de forma clara e útil, explicando o que aconteceu.\n\n"
+                                f"{terminal_result_text}\n\n"
+                                "IMPORTANTE: NÃO uses nenhuma ferramenta nesta resposta. Apenas informa o utilizador sobre o erro em português de Portugal. "
+                                "NÃO escrevas nenhuma linha ACTION: nesta resposta."
+                            )
+                    elif tool_name == 'homeassistant_get_states':
+                        logger.info(
+                            f"Processing homeassistant_get_states result for user {request.user.id}, "
+                            f"success={action_result.get('success', False)}"
+                        )
+                        from .services.ollama_client import build_messages, call_ollama, strip_action_line
+                        import json
+                        
+                        if action_result.get('success'):
+                            states = action_result.get('states', [])
+                            logger.debug(
+                                f"Home Assistant states retrieved for user {request.user.id}, "
+                                f"states_count={len(states)}"
+                            )
+                            
+                            # Filter climate devices and format for LLM
+                            climate_devices = []
+                            for state in states:
+                                entity_id = state.get('entity_id', '')
+                                if entity_id.startswith('climate.'):
+                                    device_state = state.get('state', 'unknown')
+                                    attributes = state.get('attributes', {})
+                                    friendly_name = attributes.get('friendly_name', entity_id.split('.')[-1].replace('_', ' ').title())
+                                    temperature = attributes.get('temperature')
+                                    hvac_mode = attributes.get('hvac_mode', 'unknown')
+                                    
+                                    climate_devices.append({
+                                        'entity_id': entity_id,
+                                        'name': friendly_name,
+                                        'state': device_state,
+                                        'temperature': temperature,
+                                        'hvac_mode': hvac_mode,
+                                    })
+                            
+                            states_json = json.dumps(climate_devices, ensure_ascii=False, indent=2)
+                            user_message = (
+                                "Aqui estão os estados dos ar condicionados que consultaste. "
+                                "Analisa os dados e responde ao utilizador de forma clara, indicando quais estão ligados, desligados, "
+                                "as temperaturas e modos (heat/cool/auto).\n\n"
+                                f"Estados dos ar condicionados:\n{states_json}\n\n"
+                                "IMPORTANTE: NÃO uses nenhuma ferramenta nesta resposta. Apenas apresenta a informação ao utilizador em português de Portugal. "
+                                "NÃO escrevas nenhuma linha ACTION: nesta resposta."
+                            )
+                        else:
+                            error_message = action_result.get('message', 'Unknown error')
+                            logger.warning(
+                                f"Home Assistant get_states failed for user {request.user.id}, "
+                                f"error={error_message}"
+                            )
+                            user_message = (
+                                "Ocorreu um erro ao tentar obter os estados dos dispositivos do Home Assistant. "
+                                "Informa o utilizador sobre o erro de forma clara e útil.\n\n"
+                                f"Erro: {error_message}\n\n"
+                                "IMPORTANTE: NÃO uses nenhuma ferramenta nesta resposta. Apenas informa o utilizador sobre o erro em português de Portugal. "
+                                "NÃO escrevas nenhuma linha ACTION: nesta resposta."
+                            )
+                    
+                    # Add to history for second call
+                    second_history = history + [
+                        {'role': 'assistant', 'content': clean_response},
+                        {
+                            'role': 'user',
+                            'content': user_message
+                        }
+                    ]
+                    
+                    # Get system prompt and make second call
+                    from .services.ollama_client import get_system_prompt
+                    from .services.memory_service import search_memories
+                    relevant_memories = None
+                    if request.user:
+                        memories = search_memories(request.user, message, limit=5)
+                        relevant_memories = [
+                            {'content': mem.content, 'type': mem.memory_type}
+                            for mem in memories
+                        ]
+                    system_prompt = get_system_prompt(request.user, relevant_memories)
+                    
+                    second_messages = [
+                        {"role": "system", "content": system_prompt},
+                        *[m for m in second_history if m["role"] in ("user", "assistant")],
+                    ]
+                    
+                    logger.info(
+                        f"Making second LLM call for {tool_name} result for user {request.user.id}"
+                    )
+                    final_raw = call_ollama(second_messages)
+                    clean_response = strip_action_line(final_raw)
+                    logger.info(
+                        f"Second LLM call completed for user {request.user.id}, "
+                        f"response_length={len(clean_response)}"
+                    )
+                    action = None  # Clear action since we've processed it
+            
+            # Save conversation messages if conversation_id provided or create new conversation
+            if conversation_id and conversation:
+                # Add user message
+                ConversationMessage.objects.create(
+                    conversation=conversation,
+                    role='user',
+                    content=message
+                )
+                # Add assistant response
+                ConversationMessage.objects.create(
+                    conversation=conversation,
+                    role='assistant',
+                    content=clean_response
+                )
+                conversation.save()  # Update timestamp
+            elif not conversation_id:
+                # Create new conversation with first message
+                conversation = Conversation.objects.create(
+                    user=request.user,
+                    title=message[:50] + ('...' if len(message) > 50 else '')
+                )
+                ConversationMessage.objects.create(
+                    conversation=conversation,
+                    role='user',
+                    content=message
+                )
+                ConversationMessage.objects.create(
+                    conversation=conversation,
+                    role='assistant',
+                    content=clean_response
+                )
             
             # Extract and save memories from this conversation
             try:
@@ -262,7 +763,6 @@ class ChatView(APIView):
             # Generate audio for the response
             audio_base64 = None
             try:
-                from .services.tts_service import generate_speech
                 import base64
                 audio_data = generate_speech(clean_response)
                 if audio_data:
@@ -271,17 +771,23 @@ class ChatView(APIView):
             except Exception as e:
                 logger.warning(f"Error generating audio: {e}")
             
-            # Prepare response
+            # Prepare response with all fields
             response_data = {
                 'reply': clean_response,
                 'action': action if action else None,
                 'action_result': action_result if action_result else None,
+                'used_search': used_search,
+                'search_results': search_results if search_results else None,
             }
             
             # Publish to Soketi for realtime updates
             pusher_data = {
                 'message': clean_response,
                 'action': action,
+                'used_search': used_search,
+                'search_results': search_results if search_results else None,
+                'is_terminal_result': tool_name == 'terminal_command' if action else False,  # Flag to identify terminal command results
+                'is_homeassistant_result': tool_name == 'homeassistant_get_states' if action else False,  # Flag to identify HA states results
             }
             
             if audio_base64:
@@ -304,6 +810,8 @@ class ChatView(APIView):
                     'reply': None,  # Message will come via Pusher
                     'action': action if action else None,
                     'action_result': action_result if action_result else None,
+                    'used_search': used_search,
+                    'search_results': search_results if search_results else None,
                     'via_pusher': True,  # Signal that message is coming via Pusher
                 }, status=status.HTTP_200_OK)
             else:
@@ -337,6 +845,7 @@ class UserNotificationPreferencesViewSet(viewsets.ModelViewSet):
                 'agenda_events_enabled': True,
                 'agenda_reminder_minutes': 15,
                 'shopping_updates_enabled': False,
+                'notes_enabled': True,
             }
         )
         

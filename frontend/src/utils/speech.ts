@@ -71,6 +71,12 @@ const speakFromBackend = async (text: string): Promise<void> => {
       stopSpeaking();
       
       const audioBlob = await ttsAPI.generate(text);
+      
+      // Validate blob
+      if (!audioBlob || audioBlob.size === 0) {
+        throw new Error('Received empty audio blob from TTS service');
+      }
+      
       const audioUrl = URL.createObjectURL(audioBlob);
       const audio = new Audio(audioUrl);
       
@@ -95,24 +101,49 @@ const speakFromBackend = async (text: string): Promise<void> => {
         });
       }, { once: true });
       
+      // Add timeout for audio loading
+      const loadTimeout = setTimeout(() => {
+        if (currentAudio === audio && audio.readyState < 2) {
+          console.error('Audio loading timeout');
+          audio.onerror?.(new Event('timeout'));
+        }
+      }, 10000);
+      
+      audio.addEventListener('loadeddata', () => {
+        clearTimeout(loadTimeout);
+      }, { once: true });
+      
+      audio.addEventListener('error', () => {
+        clearTimeout(loadTimeout);
+      }, { once: true });
+      
       audio.onended = () => {
         URL.revokeObjectURL(audioUrl);
         currentAudio = null;
         resolve();
       };
       
-      audio.onerror = () => {
-        console.error('Error playing backend TTS audio');
+      audio.onerror = (e) => {
+        const errorMsg = audio.error ? `Error code: ${audio.error.code}, message: ${audio.error.message}` : 'Unknown error';
+        console.error('Error playing backend TTS audio:', errorMsg, e);
         URL.revokeObjectURL(audioUrl);
         currentAudio = null;
         // Fallback to Web Speech API
         speakWithWebSpeech(text).then(resolve).catch(() => resolve());
       };
       
-      // Load the audio
-      audio.load();
+      // Load the audio with error handling
+      try {
+        audio.load();
+      } catch (loadError) {
+        console.error('Error loading audio element:', loadError);
+        URL.revokeObjectURL(audioUrl);
+        currentAudio = null;
+        speakWithWebSpeech(text).then(resolve).catch(() => resolve());
+        return;
+      }
       
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error generating speech from backend:', error);
       // Fallback to Web Speech API
       speakWithWebSpeech(text).then(resolve).catch(() => resolve());

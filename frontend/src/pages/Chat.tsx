@@ -1,11 +1,12 @@
 import { useState, useEffect, useRef } from 'react';
-import { chatAPI } from '../api/client';
+import { chatAPI, conversationsAPI } from '../api/client';
 import { useSpeechRecognition } from '../hooks/useSpeechRecognition';
 import { speak, stopSpeaking } from '../utils/speech';
 import { usePusher } from '../hooks/usePusher';
 import { getUserIdFromToken } from '../utils/jwt';
-import type { ChatMessage } from '../types';
+import type { ChatMessage, Conversation } from '../types';
 import VoiceModal from '../components/VoiceModal';
+import ConversationsDropdown from '../components/ConversationsDropdown';
 
 const Chat = () => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -14,8 +15,10 @@ const Chat = () => {
   const [voiceEnabled, setVoiceEnabled] = useState(true);
   const [continuousMode, setContinuousMode] = useState(false);
   const [voiceModalOpen, setVoiceModalOpen] = useState(false);
+  const [currentConversation, setCurrentConversation] = useState<Conversation | null>(null);
+  const [conversationsUpdated, setConversationsUpdated] = useState(0);
   const voiceModalOpenRef = useRef(false);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
   const { transcript, isListening, startListening, stopListening } = useSpeechRecognition();
 
   const userId = getUserIdFromToken();
@@ -31,9 +34,54 @@ const Chat = () => {
     }
   }, [transcript, isListening, continuousMode]);
 
+  // Initial scroll to bottom
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+    if (messagesContainerRef.current) {
+      const container = messagesContainerRef.current;
+      container.scrollTop = container.scrollHeight;
+    }
+  }, []);
+
+  useEffect(() => {
+    // Scroll to bottom when messages change (WhatsApp style - messages appear at bottom)
+    if (messagesContainerRef.current) {
+      const container = messagesContainerRef.current;
+      // Use requestAnimationFrame to ensure DOM is updated
+      requestAnimationFrame(() => {
+        container.scrollTop = container.scrollHeight;
+      });
+    }
+  }, [messages, loading]);
+
+  const triggerConversationsUpdate = () => {
+    setConversationsUpdated(prev => prev + 1);
+  };
+
+  const loadConversation = async (conversationId: number) => {
+    try {
+      const conv = await conversationsAPI.get(conversationId);
+      setCurrentConversation(conv);
+      // Convert conversation messages to ChatMessage format
+      const chatMessages: ChatMessage[] = conv.messages?.map(msg => ({
+        role: msg.role,
+        content: msg.content,
+      })) || [];
+      setMessages(chatMessages);
+      // Scroll to bottom after loading conversation
+      setTimeout(() => {
+        if (messagesContainerRef.current) {
+          messagesContainerRef.current.scrollTop = messagesContainerRef.current.scrollHeight;
+        }
+      }, 100);
+    } catch (error) {
+      console.error('Error loading conversation:', error);
+    }
+  };
+
+  const startNewConversation = () => {
+    setCurrentConversation(null);
+    setMessages([]);
+  };
 
   usePusher(userId || 0, async (event, data) => {
     console.log('[Chat] Pusher event received:', event, data);
@@ -135,6 +183,7 @@ const Chat = () => {
       } else {
         console.log('[Chat] Handling normal message:', data.message);
         // Normal message - check if already exists to avoid duplicates
+        // Also check if this is a follow-up message after a terminal command (should replace previous assistant message)
         setMessages((prev) => {
           // Check if this message was already added
           const alreadyExists = prev.some(
@@ -144,6 +193,26 @@ const Chat = () => {
             console.log('[Chat] Message already exists, skipping Pusher message');
             return prev;
           }
+          
+          // Check if this is a terminal command result (using flag from backend or content analysis)
+          const isTerminalResult = data.is_terminal_result === true;
+          const lastMessage = prev[prev.length - 1];
+          const isTerminalCommandFollowUp = isTerminalResult || (
+            lastMessage?.role === 'assistant' && 
+            (lastMessage.content.includes('vou executar') || 
+             lastMessage.content.includes('Vou executar') ||
+             lastMessage.content.includes('executar este comando') ||
+             lastMessage.content.includes('Executar este comando') ||
+             lastMessage.content.includes('Vou executar este comando'))
+          );
+          
+          if (isTerminalCommandFollowUp) {
+            // Replace the last assistant message with the new one (terminal command result)
+            console.log('[Chat] Replacing previous terminal command message with result');
+            const filtered = prev.slice(0, -1);
+            return [...filtered, { role: 'assistant' as const, content: data.message }];
+          }
+          
           const newMessages = [...prev, { role: 'assistant' as const, content: data.message }];
           console.log('[Chat] Updated messages after normal message:', newMessages);
           return newMessages;
@@ -198,7 +267,7 @@ const Chat = () => {
     setLoading(true);
 
     try {
-      const response = await chatAPI.send(userMessage, messages);
+      const response = await chatAPI.send(userMessage, messages, currentConversation?.id);
       
       // Check if search is in progress
       if (response.search_in_progress) {
@@ -270,7 +339,18 @@ const Chat = () => {
     setLoading(true);
 
     try {
-      const response = await chatAPI.send(userMessage, messages);
+      const response = await chatAPI.send(userMessage, messages, currentConversation?.id);
+      
+      // If this is a new conversation and we got a response, create conversation
+      if (!currentConversation && response.reply) {
+        try {
+          const newConv = await conversationsAPI.create(userMessage);
+          setCurrentConversation(newConv);
+          triggerConversationsUpdate();
+        } catch (error) {
+          console.error('Error creating conversation:', error);
+        }
+      }
       
       // Check if search is in progress
       if (response.search_in_progress) {
@@ -349,20 +429,42 @@ const Chat = () => {
 
   return (
     <div className="h-full flex flex-col bg-gradient-to-b from-dark-charcoal via-dark-charcoal to-dark-warm-gray/30">
-      <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-4">
+      <div 
+        ref={messagesContainerRef}
+        className="flex-1 overflow-y-auto p-3 md:p-4 lg:p-6 space-y-3 md:space-y-4 flex flex-col"
+      >
         {messages.length === 0 && (
-          <div className="text-center text-text-medium mt-10 md:mt-20">
+          <div className="flex-1 flex items-center justify-center">
+            <div className="text-center text-text-medium px-4">
             <img 
               src="/personal_assistance_logo_nobg.png" 
               alt="Personal Assistant Logo" 
-              className="h-24 w-24 md:h-32 md:w-32 object-contain mx-auto mb-4 drop-shadow-lg"
+              className="h-16 w-16 sm:h-20 sm:w-20 md:h-24 md:w-24 lg:h-32 lg:w-32 object-contain mx-auto mb-3 md:mb-4 drop-shadow-lg"
             />
-            <h2 className="text-xl md:text-2xl font-semibold bg-gradient-to-r from-primary-gold to-primary-gold-soft bg-clip-text text-transparent mb-2">
+            <h2 className="text-lg sm:text-xl md:text-2xl font-semibold bg-gradient-to-r from-primary-gold to-primary-gold-soft bg-clip-text text-transparent mb-2">
               Your Personal Assistant
             </h2>
-            <p className="text-sm md:text-base">Ask me anything or use voice input to get started.</p>
+            <p className="text-xs sm:text-sm md:text-base">Ask me anything or use voice input to get started.</p>
+            <div className="mt-4 p-3 md:p-4 bg-dark-warm-gray/50 rounded-lg border border-primary-gold/20 max-w-2xl mx-auto">
+              <p className="text-xs sm:text-sm md:text-base font-semibold text-primary-gold mb-2">
+                Posso ajudar-te com:
+              </p>
+              <ul className="text-xs sm:text-sm md:text-base text-text-medium space-y-1 text-left">
+                <li>📝 <strong>Notas:</strong> Cria e gere notas</li>
+                <li>📅 <strong>Eventos:</strong> Cria eventos na agenda</li>
+                <li>🛒 <strong>Lista de Compras:</strong> Adiciona itens à lista de compras</li>
+                <li>🏠 <strong>Casa Inteligente:</strong> Controla dispositivos Home Assistant</li>
+                <li>💻 <strong>Terminal:</strong> Verifica containers, VMs e sistema</li>
+              </ul>
+            </div>
+            <p className="text-xs sm:text-sm md:text-base mt-4 text-text-medium">
+              Exemplos: "Vê se os containers estão a correr" ou "Cria uma nota sobre..."
+            </p>
+            </div>
           </div>
         )}
+
+        <div className="flex-1" /> {/* Spacer to push messages to bottom */}
 
         {messages.map((msg, idx) => (
           <div
@@ -372,13 +474,13 @@ const Chat = () => {
             }`}
           >
             <div
-              className={`max-w-[85%] md:max-w-3xl rounded-xl px-4 py-3 shadow-lg ${
+              className={`max-w-[90%] sm:max-w-[85%] md:max-w-3xl rounded-lg md:rounded-xl px-3 py-2 md:px-4 md:py-3 shadow-lg ${
                 msg.role === 'user'
                   ? 'bg-gradient-to-br from-primary-gold to-primary-gold-soft text-dark-charcoal'
                   : 'bg-dark-warm-gray/90 backdrop-blur-sm text-text-light border border-primary-gold/10'
               }`}
             >
-              <p className="whitespace-pre-wrap text-sm md:text-base">{msg.content}</p>
+              <p className="whitespace-pre-wrap text-xs sm:text-sm md:text-base leading-relaxed">{msg.content}</p>
             </div>
           </div>
         ))}
@@ -395,11 +497,17 @@ const Chat = () => {
           </div>
         )}
 
-        <div ref={messagesEndRef} />
       </div>
 
-      <div className="border-t border-primary-gold/20 p-3 md:p-4 bg-gradient-to-t from-dark-warm-gray to-dark-charcoal shadow-2xl">
-        <div className="flex gap-2 items-end">
+      <div className="border-t border-primary-gold/20 p-2 sm:p-3 md:p-4 bg-gradient-to-t from-dark-warm-gray to-dark-charcoal shadow-2xl">
+        <div className="flex gap-1.5 sm:gap-2 items-end">
+          {/* Conversations dropdown */}
+          <ConversationsDropdown
+            currentConversation={currentConversation}
+            onSelectConversation={loadConversation}
+            onNewConversation={startNewConversation}
+            onConversationsUpdated={conversationsUpdated}
+          />
           <div className="flex-1">
             <textarea
               value={input}
@@ -411,7 +519,7 @@ const Chat = () => {
                 }
               }}
               placeholder="Type your message or use voice input..."
-              className="input-field w-full resize-none min-h-[50px] md:min-h-[60px] max-h-32 text-sm md:text-base"
+              className="input-field w-full resize-none min-h-[44px] sm:min-h-[50px] md:min-h-[60px] max-h-32 text-xs sm:text-sm md:text-base"
               rows={2}
               disabled={continuousMode}
             />
@@ -426,14 +534,14 @@ const Chat = () => {
           </div>
           <button
             onClick={() => setVoiceModalOpen(true)}
-            className="btn-secondary p-3 transition-all hover:bg-primary-gold/10 hover:text-primary-gold"
+            className="btn-secondary p-2 sm:p-2.5 md:p-3 transition-all hover:bg-primary-gold/10 hover:text-primary-gold text-base sm:text-lg"
             title="Abrir modal de voz"
           >
             🎙️
           </button>
           <button
             onClick={handleMicClick}
-            className={`btn-secondary p-3 transition-all ${
+            className={`btn-secondary p-2 sm:p-2.5 md:p-3 transition-all text-base sm:text-lg ${
               continuousMode
                 ? 'bg-primary-gold hover:bg-primary-gold-soft text-dark-charcoal animate-pulse'
                 : isListening
@@ -447,12 +555,12 @@ const Chat = () => {
           <button
             onClick={handleSend}
             disabled={!input.trim() || loading || continuousMode}
-            className="btn-primary px-4 md:px-6 py-3 disabled:opacity-50 text-sm md:text-base"
+            className="btn-primary px-3 sm:px-4 md:px-6 py-2 sm:py-2.5 md:py-3 disabled:opacity-50 text-xs sm:text-sm md:text-base"
           >
             Send
           </button>
         </div>
-        <div className="mt-2 flex items-center gap-2 text-sm text-text-medium flex-wrap">
+        <div className="mt-2 flex items-center gap-1.5 sm:gap-2 text-xs sm:text-sm text-text-medium flex-wrap">
           <button
             onClick={() => {
               setVoiceEnabled(!voiceEnabled);

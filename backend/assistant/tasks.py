@@ -10,6 +10,67 @@ from .services.pusher_service import publish_to_user
 from .services.ollama_client import call_ollama, build_messages, parse_action
 from .services.tool_dispatcher import dispatch_tool
 from django.contrib.auth.models import User
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+@shared_task(name='assistant.tasks.send_web_push_notification')
+def send_web_push_notification_task(user_id: int, payload: Dict[str, Any], ttl: int = 86400) -> Dict[str, Any]:
+    """
+    Send a web push notification to a user asynchronously.
+    
+    Args:
+        user_id: User ID to send notification to
+        payload: Dictionary with notification data:
+            - title (required): Notification title
+            - body (required): Notification body
+            - icon (optional): URL to icon
+            - badge (optional): URL to badge
+            - url (optional): URL to open when clicked
+            - tag (optional): Notification tag
+            - data (optional): Additional data
+        ttl: Time to live in seconds (default: 86400 = 24 hours)
+    
+    Returns:
+        Dictionary with results:
+        {
+            'success': bool,
+            'results': List[Dict],  # Results from send_web_push_to_user
+            'error': str (optional)
+        }
+    """
+    try:
+        user = User.objects.get(id=user_id)
+        results = send_web_push_to_user(user=user, payload=payload, ttl=ttl)
+        
+        # Count successes and errors
+        success_count = sum(1 for r in results if r.get('success', False))
+        errors = [r.get('error') for r in results if not r.get('success', False) and r.get('error')]
+        
+        logger.info(f"Web push notification sent to user {user_id}: {success_count} success(es), {len(errors)} error(s)")
+        
+        return {
+            'success': success_count > 0,
+            'results': results,
+            'success_count': success_count,
+            'error_count': len(errors),
+            'errors': errors if errors else None
+        }
+    except User.DoesNotExist:
+        logger.error(f"User {user_id} not found for web push notification")
+        return {
+            'success': False,
+            'error': 'User not found',
+            'results': []
+        }
+    except Exception as e:
+        logger.error(f"Error sending web push notification to user {user_id}: {e}", exc_info=True)
+        return {
+            'success': False,
+            'error': str(e),
+            'results': []
+        }
 
 
 @shared_task
@@ -69,27 +130,21 @@ def check_upcoming_events():
             message += f" em {event.location}"
         message += f" às {time_str}"
         
-        # Send notification to all user's subscriptions using send_web_push_to_user
-        try:
-            send_web_push_to_user(
-                user=event.user,
-                payload={
-                    'title': 'Evento na Agenda',
-                    'body': message,
-                    'url': '/agenda',
-                    'tag': 'agenda-reminder',
-                    'data': {
-                        'type': 'agenda_event',
-                        'event_id': event.id,
-                        'title': event.title,
-                    }
+        # Send notification to all user's subscriptions using async task
+        send_web_push_notification_task.delay(
+            user_id=event.user.id,
+            payload={
+                'title': 'Evento na Agenda',
+                'body': message,
+                'url': '/agenda',
+                'tag': 'agenda-reminder',
+                'data': {
+                    'type': 'agenda_event',
+                    'event_id': event.id,
+                    'title': event.title,
                 }
-            )
-        except Exception as e:
-            # Log error but continue with other events
-            import logging
-            logger = logging.getLogger(__name__)
-            logger.error(f"Error sending push notification for event {event.id}: {e}")
+            }
+        )
         
         notified_events.append(event.id)
     

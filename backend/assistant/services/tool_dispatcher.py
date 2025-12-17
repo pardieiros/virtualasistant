@@ -3,7 +3,8 @@ import logging
 from django.contrib.auth.models import User
 from datetime import datetime, timezone, timedelta
 from ..models import ShoppingItem, AgendaEvent, Note, UserNotificationPreferences
-from .homeassistant_client import call_homeassistant_service
+from .homeassistant_client import call_homeassistant_service, get_homeassistant_states
+from .terminal_api_service import execute_terminal_command
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,10 @@ def dispatch_tool(tool_name: str, args: Dict[str, Any], user: User) -> Dict[str,
         return save_note(args, user)
     elif tool_name == 'homeassistant_call_service':
         return homeassistant_call_service(args, user)
+    elif tool_name == 'homeassistant_get_states':
+        return homeassistant_get_states(args, user)
+    elif tool_name == 'terminal_command':
+        return terminal_command(args, user)
     elif tool_name == 'web_search':
         # Web search is handled asynchronously via Celery task
         # This should not be called directly
@@ -58,13 +63,13 @@ def add_shopping_item(args: Dict[str, Any], user: User) -> Dict[str, Any]:
             priority=args.get('priority', 'medium'),
         )
         
-        # Send push notification if user has shopping updates enabled
+        # Send push notification if user has shopping updates enabled (async task)
         try:
             preferences = UserNotificationPreferences.objects.get(user=user)
             if preferences.shopping_updates_enabled:
-                from ..push_notifications import send_web_push_to_user
-                send_web_push_to_user(
-                    user=user,
+                from ..tasks import send_web_push_notification_task
+                send_web_push_notification_task.delay(
+                    user_id=user.id,
                     payload={
                         'title': 'Item adicionado à lista de compras',
                         'body': f'"{item.name}" foi adicionado à tua lista de compras',
@@ -82,7 +87,7 @@ def add_shopping_item(args: Dict[str, Any], user: User) -> Dict[str, Any]:
             pass
         except Exception as push_error:
             # Log error but don't fail the operation
-            logger.warning(f"Failed to send push notification for shopping item: {push_error}")
+            logger.warning(f"Failed to queue push notification for shopping item: {push_error}")
         
         return {
             'success': True,
@@ -187,17 +192,17 @@ def add_agenda_event(args: Dict[str, Any], user: User) -> Dict[str, Any]:
             send_notification=args.get('send_notification', True),  # Default to True when added by Ollama
         )
         
-        # Send immediate push notification when event is added
+        # Send immediate push notification when event is added (async task)
         try:
-            from ..push_notifications import send_web_push_to_user
+            from ..tasks import send_web_push_notification_task
             time_str = "Todo o dia" if event.all_day else event.start_datetime.strftime("%H:%M")
             message = f'Evento "{event.title}" adicionado à agenda'
             if event.location:
                 message += f' em {event.location}'
             message += f' às {time_str}'
             
-            send_web_push_to_user(
-                user=user,
+            send_web_push_notification_task.delay(
+                user_id=user.id,
                 payload={
                     'title': 'Evento adicionado à agenda',
                     'body': message,
@@ -212,7 +217,7 @@ def add_agenda_event(args: Dict[str, Any], user: User) -> Dict[str, Any]:
             )
         except Exception as push_error:
             # Log error but don't fail the operation
-            logger.warning(f"Failed to send push notification for agenda event: {push_error}")
+            logger.warning(f"Failed to queue push notification for agenda event: {push_error}")
         
         return {
             'success': True,
@@ -237,13 +242,13 @@ def save_note(args: Dict[str, Any], user: User) -> Dict[str, Any]:
             text=args.get('text', ''),
         )
         
-        # Send push notification when note is saved
+        # Send push notification when note is saved (async task)
         try:
-            from ..push_notifications import send_web_push_to_user
+            from ..tasks import send_web_push_notification_task
             # Truncate note text for notification (max 100 chars)
             note_preview = note.text[:100] + ('...' if len(note.text) > 100 else '')
-            send_web_push_to_user(
-                user=user,
+            send_web_push_notification_task.delay(
+                user_id=user.id,
                 payload={
                     'title': 'Nota guardada',
                     'body': note_preview,
@@ -257,7 +262,7 @@ def save_note(args: Dict[str, Any], user: User) -> Dict[str, Any]:
             )
         except Exception as push_error:
             # Log error but don't fail the operation
-            logger.warning(f"Failed to send push notification for note: {push_error}")
+            logger.warning(f"Failed to queue push notification for note: {push_error}")
         
         return {
             'success': True,
@@ -276,16 +281,116 @@ def save_note(args: Dict[str, Any], user: User) -> Dict[str, Any]:
 def homeassistant_call_service(args: Dict[str, Any], user: User) -> Dict[str, Any]:
     """Call a Home Assistant service."""
     try:
+        domain = args.get('domain')
+        service = args.get('service')
+        data = args.get('data', {})
+        
         result = call_homeassistant_service(
             user=user,
-            domain=args.get('domain'),
-            service=args.get('service'),
-            data=args.get('data', {})
+            domain=domain,
+            service=service,
+            data=data
         )
+        
+        # Send push notification for climate devices (air conditioners) (async task)
+        if result.get('success') and domain == 'climate':
+            try:
+                from ..tasks import send_web_push_notification_task
+                from ..models import DeviceAlias
+                
+                entity_id = data.get('entity_id', '')
+                if entity_id:
+                    # Get device alias/name
+                    alias_obj = DeviceAlias.objects.filter(user=user, entity_id=entity_id).first()
+                    device_name = alias_obj.alias if alias_obj else entity_id.split('.')[-1].replace('_', ' ').title()
+                    
+                    # Build notification message based on service
+                    if service == 'set_temperature':
+                        temperature = data.get('temperature')
+                        hvac_mode = data.get('hvac_mode', '')
+                        mode_text = ''
+                        if hvac_mode == 'heat':
+                            mode_text = ' (aquecimento)'
+                        elif hvac_mode == 'cool':
+                            mode_text = ' (arrefecimento)'
+                        elif hvac_mode == 'auto':
+                            mode_text = ' (automático)'
+                        
+                        title = 'Ar condicionado ligado'
+                        body = f'{device_name} ligado a {temperature}°C{mode_text}'
+                        
+                    elif service == 'turn_off':
+                        title = 'Ar condicionado desligado'
+                        body = f'{device_name} desligado'
+                        
+                    elif service == 'set_hvac_mode':
+                        hvac_mode = data.get('hvac_mode', '')
+                        mode_text = {
+                            'heat': 'aquecimento',
+                            'cool': 'arrefecimento',
+                            'auto': 'automático',
+                            'off': 'desligado'
+                        }.get(hvac_mode, hvac_mode)
+                        title = 'Modo do ar condicionado alterado'
+                        body = f'{device_name} alterado para modo {mode_text}'
+                        
+                    else:
+                        # Generic notification for other climate services
+                        title = 'Ar condicionado controlado'
+                        body = f'{device_name} - {service}'
+                    
+                    send_web_push_notification_task.delay(
+                        user_id=user.id,
+                        payload={
+                            'title': title,
+                            'body': body,
+                            'url': '/homeassistant',
+                            'tag': 'homeassistant-climate-control',
+                            'data': {
+                                'type': 'homeassistant_climate',
+                                'entity_id': entity_id,
+                                'service': service,
+                                'device_name': device_name,
+                            }
+                        }
+                    )
+            except Exception as push_error:
+                # Log error but don't fail the operation
+                logger.warning(f"Failed to queue push notification for climate control: {push_error}")
+        
         return result
     except Exception as e:
         return {
             'success': False,
             'message': f'Error calling Home Assistant: {str(e)}'
         }
+
+
+def homeassistant_get_states(args: Dict[str, Any], user: User) -> Dict[str, Any]:
+    """Get Home Assistant device states."""
+    try:
+        result = get_homeassistant_states(user)
+        return result
+    except Exception as e:
+        return {
+            'success': False,
+            'message': f'Error getting Home Assistant states: {str(e)}'
+        }
+
+
+def terminal_command(args: Dict[str, Any], user: User) -> Dict[str, Any]:
+    """Execute a terminal command via Terminal API."""
+    command = args.get('command', '').strip()
+    
+    if not command:
+        return {
+            'success': False,
+            'message': 'Command is required',
+            'stdout': '',
+            'stderr': 'Command is required',
+            'returncode': -1,
+        }
+    
+    result = execute_terminal_command(command, user)
+    return result
 

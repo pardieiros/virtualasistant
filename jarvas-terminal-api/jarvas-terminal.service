@@ -1,0 +1,33 @@
+[Unit]
+Description=Jarvas Terminal API Service
+Documentation=https://github.com/your-repo/jarvas-terminal-api
+After=network.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/jarvas-terminal
+Environment="PATH=/opt/jarvas-terminal/venv/bin:/usr/local/bin:/usr/bin:/bin"
+ExecStart=/opt/jarvas-terminal/venv/bin/python3 /opt/jarvas-terminal/jarvas_terminal_api.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=jarvas-terminal
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+
+
+
+
+
+
+
+
+

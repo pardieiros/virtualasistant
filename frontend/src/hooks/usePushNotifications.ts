@@ -122,23 +122,22 @@ export function usePushNotifications(): UsePushNotificationsReturn {
       }
 
       // Convert VAPID key from base64 URL-safe to Uint8Array
-      // The key should be 65 bytes (0x04 prefix + 32 bytes X + 32 bytes Y)
-      const keyArray = urlBase64ToUint8Array(vapidPublicKey)
-      
-      // Validate key length (should be 65 bytes for uncompressed P-256 public key)
-      if (keyArray.length !== 65) {
-        throw new Error(
-          `Invalid VAPID public key length: expected 65 bytes, got ${keyArray.length}. ` +
-          `Please regenerate VAPID keys using the updated script.`
-        )
+      let applicationServerKey: BufferSource
+      try {
+        applicationServerKey = urlBase64ToUint8Array(vapidPublicKey)
+        
+        // Validate key is not empty
+        if (!applicationServerKey || (applicationServerKey instanceof Uint8Array && applicationServerKey.length === 0)) {
+          throw new Error('Invalid VAPID public key: empty key')
+        }
+      } catch (err: any) {
+        throw new Error(`Failed to process VAPID public key: ${err.message}`)
       }
 
       // Subscribe to push manager
-      // Create a new ArrayBuffer to ensure proper type compatibility
-      const keyBuffer = new Uint8Array(keyArray).buffer
       const subscription = await reg.pushManager.subscribe({
         userVisibleOnly: true,
-        applicationServerKey: keyBuffer,
+        applicationServerKey,
       })
 
       // Extract subscription data
@@ -233,20 +232,36 @@ export function usePushNotifications(): UsePushNotificationsReturn {
 }
 
 /**
- * Convert base64 URL-safe string to Uint8Array
+ * Convert base64 URL-safe string to BufferSource
  * Required for VAPID public key
  */
-function urlBase64ToUint8Array(base64String: string): Uint8Array {
-  const padding = '='.repeat((4 - (base64String.length % 4)) % 4)
-  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/')
+function urlBase64ToUint8Array(base64String: string): BufferSource {
+  try {
+    // Validate input
+    if (!base64String || typeof base64String !== 'string') {
+      throw new Error('Invalid base64 string input')
+    }
 
-  const rawData = window.atob(base64)
-  const outputArray = new Uint8Array(rawData.length)
+    // Remove any whitespace
+    base64String = base64String.trim()
 
-  for (let i = 0; i < rawData.length; ++i) {
-    outputArray[i] = rawData.charCodeAt(i)
+    // Add padding if needed
+    const padding = '='.repeat((4 - (base64String.length % 4)) % 4)
+    const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/')
+
+    // Decode base64
+    const rawData = window.atob(base64)
+    
+    // Create Uint8Array from decoded data
+    const outputArray = new Uint8Array(rawData.length)
+    for (let i = 0; i < rawData.length; ++i) {
+      outputArray[i] = rawData.charCodeAt(i)
+    }
+    
+    return outputArray
+  } catch (error: any) {
+    throw new Error(`Failed to convert VAPID key from base64: ${error.message}`)
   }
-  return outputArray
 }
 
 /**

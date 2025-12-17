@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
-import { homeAssistantAPI, notificationPreferencesAPI } from '../api/client';
-import type { HomeAssistantConfig, UserNotificationPreferences } from '../types';
+import { homeAssistantAPI, notificationPreferencesAPI, terminalAPI } from '../api/client';
+import type { HomeAssistantConfig, UserNotificationPreferences, TerminalAPIConfig } from '../types';
 import { usePushNotifications } from '../hooks/usePushNotifications';
 
 const Settings = () => {
@@ -17,15 +17,24 @@ const Settings = () => {
     long_lived_token: '',
     enabled: false,
   });
+  const [terminalFormData, setTerminalFormData] = useState({
+    api_url: '',
+    api_token: '',
+    enabled: false,
+  });
+  const [terminalConfig, setTerminalConfig] = useState<TerminalAPIConfig | null>(null);
+  const [savingTerminal, setSavingTerminal] = useState(false);
   const [notifFormData, setNotifFormData] = useState({
     agenda_events_enabled: true,
     agenda_reminder_minutes: 15,
     shopping_updates_enabled: false,
+    notes_enabled: true,
   });
 
   useEffect(() => {
     loadConfig();
     loadNotificationPreferences();
+    loadTerminalConfig();
   }, []);
 
   const loadConfig = async () => {
@@ -56,10 +65,42 @@ const Settings = () => {
           agenda_events_enabled: preferences.agenda_events_enabled,
           agenda_reminder_minutes: preferences.agenda_reminder_minutes,
           shopping_updates_enabled: preferences.shopping_updates_enabled,
+          notes_enabled: preferences.notes_enabled ?? true,
         });
       }
     } catch (error) {
       console.error('Error loading notification preferences:', error);
+    }
+  };
+
+  const loadTerminalConfig = async () => {
+    try {
+      const config = await terminalAPI.getConfig();
+      if (config) {
+        setTerminalConfig(config);
+        setTerminalFormData({
+          api_url: config.api_url || '',
+          api_token: '',
+          enabled: config.enabled,
+        });
+      }
+    } catch (error) {
+      console.error('Error loading terminal config:', error);
+    }
+  };
+
+  const handleSaveTerminal = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      setSavingTerminal(true);
+      const updated = await terminalAPI.updateConfig(terminalFormData);
+      setTerminalConfig(updated);
+      alert('Terminal API settings saved successfully!');
+    } catch (error) {
+      console.error('Error saving terminal config:', error);
+      alert('Error saving Terminal API settings');
+    } finally {
+      setSavingTerminal(false);
     }
   };
 
@@ -105,8 +146,20 @@ const Settings = () => {
 
   const handleTestNotification = async () => {
     try {
+      // Ensure service worker is ready
+      if ('serviceWorker' in navigator) {
+        const registration = await navigator.serviceWorker.ready;
+        if (!registration) {
+          throw new Error('Service worker is not ready');
+        }
+      }
+
+      // Send test notification request to backend
       await testNotification();
-      alert('Test notification sent successfully!');
+      
+      // Don't show alert - the notification will appear as a real push notification
+      // The backend will send the push notification which will be handled by the service worker
+      console.log('Test notification request sent. Check your device for the notification.');
     } catch (error: any) {
       console.error('Error testing notification:', error);
       const errorMessage = error.response?.data?.error || error.message || 'Error testing notification';
@@ -273,6 +326,16 @@ const Settings = () => {
               />
               <label className="text-text-medium">Enable notifications for shopping list updates</label>
             </div>
+
+            <div className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={notifFormData.notes_enabled}
+                onChange={(e) => setNotifFormData({ ...notifFormData, notes_enabled: e.target.checked })}
+                className="w-4 h-4"
+              />
+              <label className="text-text-medium">Enable notifications for notes</label>
+            </div>
           </div>
 
           <button type="submit" disabled={savingNotif} className="btn-primary">
@@ -290,10 +353,67 @@ const Settings = () => {
                 {pushLoading ? 'Sending...' : 'Test Push Notification'}
               </button>
               <p className="text-xs text-text-medium mt-2">
-                Send a test notification to verify that push notifications are working correctly.
+                Send a test notification to verify that push notifications are working correctly. 
+                The notification will appear on your device even with the screen locked.
               </p>
             </div>
           )}
+        </form>
+      </div>
+
+      <div className="card mb-6">
+        <h3 className="text-xl font-semibold text-text-light mb-4">
+          Terminal API Integration (Proxmox)
+        </h3>
+        <p className="text-text-medium mb-6">
+          Configure the Terminal API connection to enable Proxmox host management through your assistant.
+          You can ask things like "Vê se os containers estão a correr" or "Mostra-me os logs do searxng".
+        </p>
+
+        <form onSubmit={handleSaveTerminal} className="space-y-4">
+          <div>
+            <label className="block text-text-medium mb-2">API URL</label>
+            <input
+              type="url"
+              value={terminalFormData.api_url}
+              onChange={(e) => setTerminalFormData({ ...terminalFormData, api_url: e.target.value })}
+              className="input-field w-full"
+              placeholder="http://192.168.1.73:8900"
+            />
+            <p className="text-xs text-text-medium mt-1">
+              URL of the Terminal API service running on your Proxmox host.
+            </p>
+          </div>
+
+          <div>
+            <label className="block text-text-medium mb-2">API Token</label>
+            <input
+              type="password"
+              value={terminalFormData.api_token}
+              onChange={(e) => setTerminalFormData({ ...terminalFormData, api_token: e.target.value })}
+              className="input-field w-full"
+              placeholder={terminalConfig?.token_configured ? '••••••••' : 'Enter your token'}
+            />
+            <p className="text-xs text-text-medium mt-1">
+              {terminalConfig?.token_configured
+                ? 'Token is already configured. Leave blank to keep current token, or enter a new one to update.'
+                : 'Bearer token for Terminal API authentication. Generate a strong token on the Proxmox host.'}
+            </p>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={terminalFormData.enabled}
+              onChange={(e) => setTerminalFormData({ ...terminalFormData, enabled: e.target.checked })}
+              className="w-4 h-4"
+            />
+            <label className="text-text-medium">Enable Terminal API integration</label>
+          </div>
+
+          <button type="submit" disabled={savingTerminal} className="btn-primary">
+            {savingTerminal ? 'Saving...' : 'Save Terminal API Settings'}
+          </button>
         </form>
       </div>
 

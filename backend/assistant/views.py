@@ -27,14 +27,16 @@ from .serializers import (
     ConversationMessageSerializer,
     TerminalAPIConfigSerializer,
 )
-from .services.ollama_client import handle_user_message
+from .services.ollama_client import handle_user_message, build_messages, stream_ollama_chat
 from .services.tool_dispatcher import dispatch_tool
 from .services.pusher_service import publish_to_user
 from .services.memory_service import extract_memories_from_conversation
 from .services.tts_service import generate_speech
 from django.conf import settings
+from django.http import StreamingHttpResponse
 import hmac
 import hashlib
+import json
 
 
 class ShoppingItemViewSet(viewsets.ModelViewSet):
@@ -489,6 +491,216 @@ class ConversationViewSet(viewsets.ModelViewSet):
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 
+class ChatStreamView(APIView):
+    """
+    Streaming chat endpoint using Server-Sent Events (SSE).
+    Returns incremental chunks from Ollama as they arrive.
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def post(self, request):
+        """
+        POST endpoint for streaming chat.
+        Accepts JSON body with 'message', 'history', and optional 'conversation_id'.
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        serializer = ChatMessageSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        
+        message = serializer.validated_data['message']
+        history = serializer.validated_data.get('history', [])
+        conversation_id = serializer.validated_data.get('conversation_id', None)
+        
+        # Load conversation history if conversation_id provided
+        conversation = None
+        if conversation_id:
+            try:
+                conversation = Conversation.objects.get(id=conversation_id, user=request.user)
+                conv_messages = conversation.messages.all().order_by('created_at')
+                history = [
+                    {'role': msg.role, 'content': msg.content}
+                    for msg in conv_messages
+                ]
+            except Conversation.DoesNotExist:
+                logger.warning(f"Conversation {conversation_id} not found for user {request.user.id}")
+        
+        logger.info(f"Starting streaming chat for user {request.user.id}, message: {message[:50]}...")
+        
+        def event_stream():
+            """Generator function for SSE events."""
+            nonlocal conversation  # Access conversation from outer scope
+            try:
+                # Build messages
+                messages = build_messages(history, message, user=request.user)
+                logger.debug(f"Built {len(messages)} messages for streaming")
+                
+                accumulated_clean_text = ""
+                action_detected = None
+                full_text = ""  # Initialize outside loop for conversation saving
+                
+                # Stream from Ollama
+                for event in stream_ollama_chat(messages):
+                    event_type = event.get('type')
+                    
+                    if event_type == 'chunk':
+                        # Send chunk to client
+                        chunk_content = event.get('content', '')
+                        # Check if this chunk might be part of ACTION line
+                        # We'll accumulate and filter at the end
+                        accumulated_clean_text += chunk_content
+                        
+                        # Send as SSE message event
+                        yield f"data: {json.dumps({'type': 'chunk', 'content': chunk_content})}\n\n"
+                    
+                    elif event_type == 'done':
+                        # Get clean text without ACTION line
+                        full_text = event.get('full_text', '')
+                        raw_text = event.get('raw_text', '')
+                        
+                        logger.info(f"Stream completed for user {request.user.id}, text length: {len(full_text)}")
+                        
+                        # Calculate how much of the accumulated text was ACTION
+                        # and send a correction if needed
+                        if len(raw_text) > len(full_text):
+                            # There was an ACTION line that should be removed from UI
+                            logger.debug("ACTION line detected, sending final clean text")
+                            yield f"event: final_text\ndata: {json.dumps({'text': full_text})}\n\n"
+                        
+                        # Send done event
+                        yield f"event: done\ndata: {json.dumps({'finished': True})}\n\n"
+                    
+                    elif event_type == 'action':
+                        # Send action as separate event
+                        action_detected = event.get('action', {})
+                        logger.info(f"Action detected: {action_detected.get('tool')}")
+                        yield f"event: action\ndata: {json.dumps({'action': action_detected})}\n\n"
+                    
+                    elif event_type == 'error':
+                        # Send error event
+                        error_msg = event.get('error', 'Unknown error')
+                        logger.error(f"Streaming error for user {request.user.id}: {error_msg}")
+                        yield f"event: error\ndata: {json.dumps({'error': error_msg})}\n\n"
+                        return
+                
+                # Save conversation messages if needed
+                if conversation:
+                    ConversationMessage.objects.create(
+                        conversation=conversation,
+                        role='user',
+                        content=message
+                    )
+                    ConversationMessage.objects.create(
+                        conversation=conversation,
+                        role='assistant',
+                        content=full_text
+                    )
+                    conversation.save()
+                elif not conversation_id:
+                    # Create new conversation
+                    conversation = Conversation.objects.create(
+                        user=request.user,
+                        title=message[:50] + ('...' if len(message) > 50 else '')
+                    )
+                    ConversationMessage.objects.create(
+                        conversation=conversation,
+                        role='user',
+                        content=message
+                    )
+                    ConversationMessage.objects.create(
+                        conversation=conversation,
+                        role='assistant',
+                        content=full_text
+                    )
+                
+                logger.info(f"Streaming completed successfully for user {request.user.id}")
+                
+            except Exception as e:
+                logger.error(f"Error in streaming chat: {str(e)}", exc_info=True)
+                yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
+        
+        # Return StreamingHttpResponse with SSE headers
+        response = StreamingHttpResponse(
+            event_stream(),
+            content_type='text/event-stream'
+        )
+        response['Cache-Control'] = 'no-cache'
+        response['X-Accel-Buffering'] = 'no'  # Disable Nginx buffering
+        return response
+    
+    def get(self, request):
+        """
+        GET endpoint for streaming chat (alternative for simple clients).
+        Message passed as query parameter.
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        message = request.GET.get('message', '').strip()
+        if not message:
+            return Response(
+                {'error': 'message parameter is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        logger.info(f"Starting streaming chat (GET) for user {request.user.id}, message: {message[:50]}...")
+        
+        def event_stream():
+            """Generator function for SSE events."""
+            try:
+                # Build messages (no history for GET requests)
+                messages = build_messages([], message, user=request.user)
+                logger.debug(f"Built {len(messages)} messages for streaming")
+                
+                full_text = ""  # Initialize for potential future use
+                
+                # Stream from Ollama
+                for event in stream_ollama_chat(messages):
+                    event_type = event.get('type')
+                    
+                    if event_type == 'chunk':
+                        chunk_content = event.get('content', '')
+                        yield f"data: {json.dumps({'type': 'chunk', 'content': chunk_content})}\n\n"
+                    
+                    elif event_type == 'done':
+                        full_text = event.get('full_text', '')
+                        raw_text = event.get('raw_text', '')
+                        
+                        logger.info(f"Stream completed for user {request.user.id}, text length: {len(full_text)}")
+                        
+                        if len(raw_text) > len(full_text):
+                            yield f"event: final_text\ndata: {json.dumps({'text': full_text})}\n\n"
+                        
+                        yield f"event: done\ndata: {json.dumps({'finished': True})}\n\n"
+                    
+                    elif event_type == 'action':
+                        action_detected = event.get('action', {})
+                        logger.info(f"Action detected: {action_detected.get('tool')}")
+                        yield f"event: action\ndata: {json.dumps({'action': action_detected})}\n\n"
+                    
+                    elif event_type == 'error':
+                        error_msg = event.get('error', 'Unknown error')
+                        logger.error(f"Streaming error for user {request.user.id}: {error_msg}")
+                        yield f"event: error\ndata: {json.dumps({'error': error_msg})}\n\n"
+                        return
+                
+                logger.info(f"Streaming completed successfully for user {request.user.id}")
+                
+            except Exception as e:
+                logger.error(f"Error in streaming chat: {str(e)}", exc_info=True)
+                yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
+        
+        # Return StreamingHttpResponse with SSE headers
+        response = StreamingHttpResponse(
+            event_stream(),
+            content_type='text/event-stream'
+        )
+        response['Cache-Control'] = 'no-cache'
+        response['X-Accel-Buffering'] = 'no'
+        return response
+
+
 class ChatView(APIView):
     permission_classes = [IsAuthenticated]
     
@@ -820,6 +1032,7 @@ class ChatView(APIView):
                 return Response(response_data, status=status.HTTP_200_OK)
         
         except Exception as e:
+            logger.error(f"Error in chat endpoint: {str(e)}", exc_info=True)
             return Response(
                 {'error': str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR

@@ -1,6 +1,6 @@
 import json
 import requests
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Iterator
 from django.conf import settings
 from datetime import datetime, timezone
 from django.contrib.auth.models import User
@@ -8,82 +8,16 @@ from .memory_service import search_memories, extract_memories_from_conversation
 from .web_search_service import search_web
 from ..models import DeviceAlias, HomeAssistantConfig
 from .homeassistant_client import get_homeassistant_states
+import logging
 
-def get_homeassistant_devices_info(user: Optional[User] = None) -> str:
-    """Get Home Assistant devices and aliases information for system prompt."""
-    if not user:
-        return ""
-    
-    try:
-        # Check if HA is configured
-        config = HomeAssistantConfig.objects.filter(user=user, enabled=True).first()
-        if not config:
-            return ""
-        
-        # Get aliases
-        aliases = DeviceAlias.objects.filter(user=user)
-        alias_info = []
-        
-        # Get states to find climate devices
-        states_result = get_homeassistant_states(user)
-        if states_result.get('success'):
-            states = states_result.get('states', [])
-            climate_devices = [s for s in states if s.get('entity_id', '').startswith('climate.')]
-            
-            for state in climate_devices:
-                entity_id = state.get('entity_id', '')
-                # Find alias for this entity
-                alias_obj = aliases.filter(entity_id=entity_id).first()
-                
-                device_name = alias_obj.alias if alias_obj else entity_id.split('.')[-1].replace('_', ' ').title()
-                area = alias_obj.area if alias_obj and alias_obj.area else None
-                
-                info = f"- {device_name} (entity_id: {entity_id})"
-                if area:
-                    info += f" - Área: {area}"
-                alias_info.append(info)
-        
-        if alias_info:
-            return "\n\nHOME ASSISTANT - DISPOSITIVOS DISPONÍVEIS:\n" + "\n".join(alias_info) + "\n"
-        else:
-            # Fallback: list known climate devices
-            return "\n\nHOME ASSISTANT - AR CONDICIONADOS DISPONÍVEIS:\n- Quarto (entity_id: climate.quarto)\n- Sala (entity_id: climate.sala)\n- Cozinha (entity_id: climate.cozinha)\n"
-    except Exception as e:
-        import logging
-        logger = logging.getLogger(__name__)
-        logger.warning(f"Failed to get HA devices info: {e}")
-        return ""
+logger = logging.getLogger(__name__)
 
-
-def get_system_prompt(user: Optional[User] = None, relevant_memories: Optional[List[Dict]] = None) -> str:
-    """Get system prompt with current date/time information."""
-    now = datetime.now(timezone.utc)
-    current_date = now.strftime("%Y-%m-%d")
-    current_time = now.strftime("%H:%M:%S")
-    current_datetime_iso = now.isoformat()
-    current_month = now.month
-
-    # Determine season (Northern Hemisphere)
-    # Winter: Dec (12), Jan (1), Feb (2)
-    # Summer: Jun (6), Jul (7), Aug (8)
-    is_winter = current_month in [12, 1, 2]
-    is_summer = current_month in [6, 7, 8]
-    season = "inverno" if is_winter else "verão" if is_summer else "outono/primavera"
-    default_hvac_mode = "heat" if is_winter else ("cool" if is_summer else "auto")
-
-    memories_section = ""
-    if relevant_memories:
-        memories_section = "\n\nRELEVANT MEMORIES (coisas que sabes sobre o utilizador):\n"
-        for i, memory in enumerate(relevant_memories, 1):
-            memories_section += f"{i}. {memory.get('content', '')}\n"
-        memories_section += "\nUsa estas memórias para dar respostas mais personalizadas e com contexto. Faz referência a elas de forma natural quando fizer sentido.\n"
-    
-    ha_devices_section = get_homeassistant_devices_info(user)
-    
-    # Build example with proper escaping
-    example_action = f'{{"tool": "homeassistant_call_service", "args": {{"domain": "climate", "service": "set_temperature", "data": {{"entity_id": "climate.cozinha", "temperature": 25, "hvac_mode": "{default_hvac_mode}"}}}}}}'
-
-    return f"""Tu és o Jarvas, assistente pessoal do utilizador Marco.
+def get_base_system_prompt() -> str:
+    """
+    Get the base system prompt (static part, no user/time data).
+    This can be cached indefinitely as it rarely changes.
+    """
+    return """Tu és o Jarvas, assistente pessoal do utilizador Marco.
 És um assistente conversacional em português de Portugal, simpático, direto e útil.
 Ajudas com:
 - Listas de compras detalhadas (itens, quantidades, lojas, notas)
@@ -92,18 +26,6 @@ Ajudas com:
 - Controlo da casa inteligente via Home Assistant (ar condicionados, luzes, etc.)
 - Perguntas gerais sobre tecnologia, desporto, atualidade, etc.
 
-INFORMAÇÃO TEMPORAL (MUITO IMPORTANTE):
-- Data atual (UTC): {current_date}
-- Hora atual (UTC): {current_time}
-- Datetime atual ISO: {current_datetime_iso}
-
-Quando o utilizador disser "hoje", "amanhã", "para a semana", etc.:
-- "hoje" = {current_date}
-- "amanhã" = dia seguinte a {current_date}
-Sempre que tiveres de escrever datas em JSON de ações, usa o formato ISO 8601 (YYYY-MM-DDTHH:MM:SS+00:00).
-
-{memories_section}
-{ha_devices_section}
 REGRAS GERAIS DE RESPOSTA:
 - Responde SEMPRE em português de Portugal.
 - Explica as coisas com clareza, mas sem ser demasiado formal.
@@ -202,76 +124,6 @@ Tens as seguintes ferramentas disponíveis. Sempre que precisares de executar a�
 
 - homeassistant_call_service: args {{ "domain": string, "service": string, "data": object }}
   Esta ferramenta permite controlar dispositivos do Home Assistant.
-  
-  CONTROLO DE AR CONDICIONADOS (MUITO IMPORTANTE):
-  - Estamos atualmente em {season} (mês {current_month}).
-  - Se for INVERNO (Dez, Jan, Fev): usa hvac_mode: "heat" para aquecer.
-  - Se for VERÃO (Jun, Jul, Ago): usa hvac_mode: "cool" para arrefecer.
-  - Se for outono/primavera: pergunta ao utilizador se quer "heat" ou "cool", ou usa "auto".
-  
-  AR CONDICIONADOS DISPONÍVEIS:
-{ha_devices_section}
-  
-  REGRAS PARA CONTROLAR AR CONDICIONADOS:
-  1. Quando o utilizador disser "liga o ar condicionado" ou similar:
-     - Se não especificar a divisão, PERGUNTA qual divisão (Quarto, Sala, Cozinha).
-     - Faz APENAS UMA pergunta se necessário. Não faças múltiplas perguntas.
-  
-  2. Determinação do modo (heat/cool):
-     - Se for inverno ({season}): usa "heat" por defeito.
-     - Se for verão ({season}): usa "cool" por defeito.
-     - Se for outono/primavera: pergunta ou usa "auto".
-  
-  3. Temperatura:
-     - Temperatura mínima: 18°C
-     - Temperatura máxima: 30°C
-     - Se o utilizador não especificar temperatura, pergunta APENAS UMA VEZ: "A que temperatura?" ou "Queres a quantos graus?"
-     - Se o utilizador disser "30 graus" ou "30º", usa 30.
-     - Se não especificar, usa 22°C como padrão (não perguntes se já perguntaste sobre a divisão).
-  
-  4. Mapeamento de nomes para entity_id:
-     - "ar condicionado do quarto" / "ar condicionado da quarto" → climate.quarto
-     - "ar condicionado da sala" → climate.sala
-     - "ar condicionado da cozinha" → climate.cozinha
-     - Usa os aliases do utilizador se existirem (ver lista acima).
-  
-  5. Formato da ACTION para ligar ar condicionado:
-     ACTION: {{"tool": "homeassistant_call_service", "args": {{
-       "domain": "climate",
-       "service": "set_temperature",
-       "data": {{
-         "entity_id": "climate.quarto",  // ou climate.sala, climate.cozinha
-         "temperature": 22,  // temperatura desejada (18-30)
-         "hvac_mode": "heat"  // ou "cool" conforme a estação
-       }}
-     }}}}
-  
-  6. Para desligar:
-     ACTION: {{"tool": "homeassistant_call_service", "args": {{
-       "domain": "climate",
-       "service": "turn_off",
-       "data": {{
-         "entity_id": "climate.quarto"  // ou outro
-       }}
-     }}}}
-  
-  7. EXEMPLOS:
-     - Utilizador: "liga o ar condicionado da cozinha a 25 graus"
-       Resposta: "Vou ligar o ar condicionado da cozinha a 25 graus."
-       ACTION: {example_action}
-     
-     - Utilizador: "liga o ar condicionado"
-       Resposta: "Qual divisão? Quarto, Sala ou Cozinha?"
-       (Espera resposta do utilizador antes de executar ACTION)
-     
-     - Utilizador: "desliga o ar condicionado do quarto"
-       Resposta: "Vou desligar o ar condicionado do quarto."
-       ACTION: {{"tool": "homeassistant_call_service", "args": {{"domain": "climate", "service": "turn_off", "data": {{"entity_id": "climate.quarto"}}}}}}
-  
-  IMPORTANTE:
-  - Faz o MÍNIMO de perguntas possível. Se o utilizador não especificar algo essencial (como a divisão), pergunta UMA VEZ.
-  - Se já tiveres informação suficiente, executa a ACTION imediatamente.
-  - Sempre que executares uma ACTION para ligar ar condicionado, confirma ao utilizador o que fizeste.
 
 IMPORTANTE:
 - Usa ferramentas sempre que necessário, mas não digas ao utilizador o formato JSON nem expliques o sistema de actions.
@@ -295,6 +147,201 @@ IMPORTANTE - QUANDO USAR ACTION:
 - Exemplo: Se o utilizador pedir "diz-me os containers docker no LXC 103", deves responder algo como "Vou verificar os containers Docker no LXC 103." seguido de ACTION: {{"tool": "terminal_command", "args": {{"command": "pct exec 103 -- docker ps"}}}} na última linha.
 - NUNCA digas que vais fazer algo sem incluir a ACTION correspondente na mesma resposta.
 """
+
+
+def get_time_prompt() -> str:
+    """
+    Get time-related prompt with current datetime.
+    Generated fresh each time (not cached).
+    """
+    now = datetime.now(timezone.utc)
+    current_date = now.strftime("%Y-%m-%d")
+    current_time = now.strftime("%H:%M:%S")
+    current_datetime_iso = now.isoformat()
+    
+    return f"""
+INFORMAÇÃO TEMPORAL (MUITO IMPORTANTE):
+- Data atual (UTC): {current_date}
+- Hora atual (UTC): {current_time}
+- Datetime atual ISO: {current_datetime_iso}
+
+Quando o utilizador disser "hoje", "amanhã", "para a semana", etc.:
+- "hoje" = {current_date}
+- "amanhã" = dia seguinte a {current_date}
+Sempre que tiveres de escrever datas em JSON de ações, usa o formato ISO 8601 (YYYY-MM-DDTHH:MM:SS+00:00).
+"""
+
+
+def get_user_context_prompt(user: Optional[User] = None) -> str:
+    """
+    Get user-specific context (HA devices, aliases).
+    Can be cached for ~10 minutes.
+    """
+    if not user:
+        return ""
+    
+    devices_info = get_homeassistant_devices_info(user)
+    return devices_info
+
+
+def get_homeassistant_devices_info(user: Optional[User] = None) -> str:
+    """Get Home Assistant devices and aliases information for system prompt."""
+    if not user:
+        return ""
+    
+    try:
+        # Check if HA is configured
+        config = HomeAssistantConfig.objects.filter(user=user, enabled=True).first()
+        if not config:
+            return ""
+        
+        # Get aliases
+        aliases = DeviceAlias.objects.filter(user=user)
+        alias_info = []
+        
+        # Try to get states to find climate devices (with quick timeout)
+        # If this fails, we'll use static fallback list
+        try:
+            states_result = get_homeassistant_states(user)
+            if states_result.get('success'):
+                states = states_result.get('states', [])
+                climate_devices = [s for s in states if s.get('entity_id', '').startswith('climate.')]
+                
+                for state in climate_devices:
+                    entity_id = state.get('entity_id', '')
+                    # Find alias for this entity
+                    alias_obj = aliases.filter(entity_id=entity_id).first()
+                    
+                    device_name = alias_obj.alias if alias_obj else entity_id.split('.')[-1].replace('_', ' ').title()
+                    area = alias_obj.area if alias_obj and alias_obj.area else None
+                    
+                    info = f"- {device_name} (entity_id: {entity_id})"
+                    if area:
+                        info += f" - Área: {area}"
+                    alias_info.append(info)
+        except Exception as e:
+            # Log but don't block - use static list instead
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.debug(f"Skipped HA states fetch (using static list): {e}")
+        
+        if alias_info:
+            return "\n\nHOME ASSISTANT - DISPOSITIVOS DISPONÍVEIS:\n" + "\n".join(alias_info) + "\n"
+        else:
+            # Fallback: list known climate devices
+            return "\n\nHOME ASSISTANT - AR CONDICIONADOS DISPONÍVEIS:\n- Quarto (entity_id: climate.quarto)\n- Sala (entity_id: climate.sala)\n- Cozinha (entity_id: climate.cozinha)\n"
+    except Exception as e:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.warning(f"Failed to get HA devices info: {e}")
+        return ""
+
+
+def get_system_prompt(user: Optional[User] = None, relevant_memories: Optional[List[Dict]] = None) -> str:
+    """
+    Build complete system prompt from cached and dynamic parts.
+    """
+    # Use cached parts where possible
+    from .prompt_cache import get_base_system_prompt_cached, get_user_context_cached
+    
+    base_prompt = get_base_system_prompt_cached()
+    time_prompt = get_time_prompt()
+    user_context = get_user_context_cached(user) if user else ""
+    
+    # Build memories section if provided
+    memories_section = ""
+    if relevant_memories:
+        memories_section = "\n\nRELEVANT MEMORIES (coisas que sabes sobre o utilizador):\n"
+        for i, memory in enumerate(relevant_memories, 1):
+            memories_section += f"{i}. {memory.get('content', '')}\n"
+        memories_section += "\nUsa estas memórias para dar respostas mais personalizadas e com contexto. Faz referência a elas de forma natural quando fizer sentido.\n"
+    
+    # Get season/HVAC context for AC control
+    now = datetime.now(timezone.utc)
+    current_month = now.month
+    is_winter = current_month in [12, 1, 2]
+    is_summer = current_month in [6, 7, 8]
+    season = "inverno" if is_winter else "verão" if is_summer else "outono/primavera"
+    default_hvac_mode = "heat" if is_winter else ("cool" if is_summer else "auto")
+    
+    # Build example with proper escaping
+    example_action = f'{{"tool": "homeassistant_call_service", "args": {{"domain": "climate", "service": "set_temperature", "data": {{"entity_id": "climate.cozinha", "temperature": 25, "hvac_mode": "{default_hvac_mode}"}}}}}}'
+    
+    # Assemble complete prompt
+    ha_control_section = f"""
+CONTROLO DE AR CONDICIONADOS (MUITO IMPORTANTE):
+- Estamos atualmente em {season} (mês {current_month}).
+- Se for INVERNO (Dez, Jan, Fev): usa hvac_mode: "heat" para aquecer.
+- Se for VERÃO (Jun, Jul, Ago): usa hvac_mode: "cool" para arrefecer.
+- Se for outono/primavera: pergunta ao utilizador se quer "heat" ou "cool", ou usa "auto".
+
+AR CONDICIONADOS DISPONÍVEIS:
+{user_context}
+
+REGRAS PARA CONTROLAR AR CONDICIONADOS:
+1. Quando o utilizador disser "liga o ar condicionado" ou similar:
+   - Se não especificar a divisão, PERGUNTA qual divisão (Quarto, Sala, Cozinha).
+   - Faz APENAS UMA pergunta se necessário. Não faças múltiplas perguntas.
+
+2. Determinação do modo (heat/cool):
+   - Se for inverno ({season}): usa "heat" por defeito.
+   - Se for verão ({season}): usa "cool" por defeito.
+   - Se for outono/primavera: pergunta ou usa "auto".
+
+3. Temperatura:
+   - Temperatura mínima: 18°C
+   - Temperatura máxima: 30°C
+   - Se o utilizador não especificar temperatura, pergunta APENAS UMA VEZ: "A que temperatura?" ou "Queres a quantos graus?"
+   - Se o utilizador disser "30 graus" ou "30º", usa 30.
+   - Se não especificar, usa 22°C como padrão (não perguntes se já perguntaste sobre a divisão).
+
+4. Mapeamento de nomes para entity_id:
+   - "ar condicionado do quarto" / "ar condicionado da quarto" → climate.quarto
+   - "ar condicionado da sala" → climate.sala
+   - "ar condicionado da cozinha" → climate.cozinha
+   - Usa os aliases do utilizador se existirem (ver lista acima).
+
+5. Formato da ACTION para ligar ar condicionado:
+   ACTION: {{"tool": "homeassistant_call_service", "args": {{
+     "domain": "climate",
+     "service": "set_temperature",
+     "data": {{
+       "entity_id": "climate.quarto",  // ou climate.sala, climate.cozinha
+       "temperature": 22,  // temperatura desejada (18-30)
+       "hvac_mode": "heat"  // ou "cool" conforme a estação
+     }}
+   }}}}
+
+6. Para desligar:
+   ACTION: {{"tool": "homeassistant_call_service", "args": {{
+     "domain": "climate",
+     "service": "turn_off",
+     "data": {{
+       "entity_id": "climate.quarto"  // ou outro
+     }}
+   }}}}
+
+7. EXEMPLOS:
+   - Utilizador: "liga o ar condicionado da cozinha a 25 graus"
+     Resposta: "Vou ligar o ar condicionado da cozinha a 25 graus."
+     ACTION: {example_action}
+   
+   - Utilizador: "liga o ar condicionado"
+     Resposta: "Qual divisão? Quarto, Sala ou Cozinha?"
+     (Espera resposta do utilizador antes de executar ACTION)
+   
+   - Utilizador: "desliga o ar condicionado do quarto"
+     Resposta: "Vou desligar o ar condicionado do quarto."
+     ACTION: {{"tool": "homeassistant_call_service", "args": {{"domain": "climate", "service": "turn_off", "data": {{"entity_id": "climate.quarto"}}}}}}
+
+IMPORTANTE:
+- Faz o MÍNIMO de perguntas possível. Se o utilizador não especificar algo essencial (como a divisão), pergunta UMA VEZ.
+- Se já tiveres informação suficiente, executa a ACTION imediatamente.
+- Sempre que executares uma ACTION para ligar ar condicionado, confirma ao utilizador o que fizeste.
+"""
+    
+    # Combine all parts
+    return base_prompt + time_prompt + memories_section + ha_control_section
 
 
 def call_ollama(messages: List[Dict[str, str]], model: Optional[str] = None) -> str:
@@ -321,45 +368,165 @@ def call_ollama(messages: List[Dict[str, str]], model: Optional[str] = None) -> 
         },
     }
     
+    logger.info(f"Calling Ollama at {url} with model {model_name}")
+    logger.debug(f"Messages count: {len(messages)}")
+    
     try:
         response = requests.post(url, json=payload, timeout=60)
         response.raise_for_status()
         data = response.json()
-        return data.get("message", {}).get("content", "")
+        content = data.get("message", {}).get("content", "")
+        logger.info(f"Ollama response received, length: {len(content)} characters")
+        if not content:
+            logger.warning("Ollama returned empty response")
+        return content
     except requests.exceptions.RequestException as e:
+        logger.error(f"Error calling Ollama at {url}: {str(e)}", exc_info=True)
         raise Exception(f"Error calling Ollama: {str(e)}")
 
 
-def build_messages(history: List[Dict], user_message: str, user: Optional[User] = None) -> List[Dict[str, str]]:
+def stream_ollama_chat(messages: List[Dict[str, str]], model: Optional[str] = None) -> Iterator[Dict]:
+    """
+    Call Ollama API with streaming enabled and yield chunks as they arrive.
+    
+    Yields dictionaries with:
+    - type: 'chunk' | 'done' | 'action' | 'error'
+    - content: text chunk (for type='chunk')
+    - action: parsed action dict (for type='action')
+    - error: error message (for type='error')
+    - full_text: complete accumulated text (for type='done')
+    
+    Args:
+        messages: List of message dicts with 'role' and 'content' keys
+        model: Optional model name override
+    
+    Yields:
+        Dict with streaming event data
+    """
+    url = f"{settings.OLLAMA_BASE_URL}/api/chat"
+    model_name = model or settings.OLLAMA_MODEL
+    
+    payload = {
+        "model": model_name,
+        "messages": messages,
+        "stream": True,  # Enable streaming
+        "options": {
+            "temperature": 0.2,
+            "num_ctx": 4096
+        },
+    }
+    
+    logger.info(f"Starting Ollama streaming at {url} with model {model_name}")
+    logger.debug(f"Messages count: {len(messages)}")
+    
+    accumulated_text = ""
+    
+    try:
+        # Use stream=True to get chunks as they arrive
+        response = requests.post(url, json=payload, stream=True, timeout=120)
+        response.raise_for_status()
+        
+        # Iterate over lines in the response
+        for line in response.iter_lines():
+            if not line:
+                continue
+            
+            try:
+                # Parse JSON from each line
+                data = json.loads(line.decode('utf-8'))
+                
+                # Check if streaming is done
+                if data.get('done', False):
+                    logger.info(f"Ollama streaming completed, total length: {len(accumulated_text)} chars")
+                    
+                    # Parse ACTION from accumulated text
+                    action = parse_action(accumulated_text)
+                    clean_text = strip_action_line(accumulated_text)
+                    
+                    # Yield done event
+                    yield {
+                        'type': 'done',
+                        'full_text': clean_text,
+                        'raw_text': accumulated_text
+                    }
+                    
+                    # Yield action event if exists
+                    if action:
+                        logger.info(f"Action detected: {action.get('tool')}")
+                        yield {
+                            'type': 'action',
+                            'action': action
+                        }
+                    
+                    break
+                
+                # Extract content chunk
+                message_data = data.get('message', {})
+                chunk = message_data.get('content', '')
+                
+                if chunk:
+                    accumulated_text += chunk
+                    
+                    # Only yield chunks that are NOT part of the ACTION line
+                    # We'll do final filtering when done, but for now send everything
+                    yield {
+                        'type': 'chunk',
+                        'content': chunk
+                    }
+            
+            except json.JSONDecodeError as e:
+                logger.warning(f"Failed to parse streaming JSON: {e}, line: {line[:100]}")
+                continue
+        
+        logger.info("Ollama streaming finished successfully")
+        
+    except requests.exceptions.RequestException as e:
+        error_msg = f"Error streaming from Ollama: {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        yield {
+            'type': 'error',
+            'error': error_msg
+        }
+    except Exception as e:
+        error_msg = f"Unexpected error during streaming: {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        yield {
+            'type': 'error',
+            'error': error_msg
+        }
+
+
+def build_messages(history: List[Dict], user_message: str, user: Optional[User] = None, max_history: int = 12) -> List[Dict[str, str]]:
     """
     Build the message list for Ollama, including system prompt with current date/time and relevant memories.
+    Uses caching for better performance.
     
     Args:
         history: Previous conversation history
         user_message: Current user message
         user: Optional user instance for memory retrieval
+        max_history: Maximum number of history messages to include (default 12)
     
     Returns:
         List of messages formatted for Ollama
     """
-    # Search for relevant memories if user is provided
+    # Use cached memory search with heuristic filtering
     relevant_memories = []
     if user:
         try:
-            memories = search_memories(user, user_message, limit=5)
-            relevant_memories = [
-                {'content': mem.content, 'type': mem.memory_type}
-                for mem in memories
-            ]
+            from .prompt_cache import get_relevant_memories_cached
+            relevant_memories = get_relevant_memories_cached(user, user_message, limit=5)
         except Exception as e:
-            # If memory search fails, continue without memories
-            import logging
-            logger = logging.getLogger(__name__)
             logger.warning(f"Failed to retrieve memories: {e}")
     
-    # Get system prompt with current date/time and memories (generated fresh each time)
+    # Get system prompt (with caching for base parts)
     system_prompt = get_system_prompt(user, relevant_memories)
     messages = [{"role": "system", "content": system_prompt}]
+    
+    # Limit history to last N messages to keep context manageable
+    if len(history) > max_history:
+        logger.debug(f"Truncating history from {len(history)} to {max_history} messages")
+        history = history[-max_history:]
     
     # Add history (already formatted)
     for msg in history:
@@ -378,6 +545,9 @@ def build_messages(history: List[Dict], user_message: str, user: Optional[User] 
 def parse_action(response_text: str) -> Optional[Dict]:
     """
     Parse ACTION JSON from the LLM response if present.
+    Supports both "ACTION:" (English) and "Ação:" (Portuguese).
+    Also handles double braces {{ }} which LLM sometimes generates.
+    Now also handles multi-line ACTION JSON.
     
     Args:
         response_text: Full LLM response
@@ -385,16 +555,110 @@ def parse_action(response_text: str) -> Optional[Dict]:
     Returns:
         Parsed action dict or None
     """
-    lines = response_text.strip().split('\n')
+    import logging
+    logger = logging.getLogger(__name__)
     
-    for line in reversed(lines):  # Check from the end
-        line = line.strip()
-        if line.startswith('ACTION:'):
-            try:
-                action_json = line.replace('ACTION:', '').strip()
-                return json.loads(action_json)
-            except (json.JSONDecodeError, ValueError):
-                return None
+    # Try to find ACTION: in the full text (not just per line)
+    text_upper = response_text.upper()
+    
+    if 'ACTION:' in text_upper:
+        try:
+            # Find the position of ACTION:
+            action_start = text_upper.index('ACTION:')
+            # Extract everything after ACTION:
+            action_part = response_text[action_start + 7:].strip()
+            logger.debug(f"Found ACTION, extracted part length: {len(action_part)}, starts with: {action_part[:50]}")
+            
+            # Fix double braces ONLY at the very start (not throughout, as }} can be valid JSON)
+            # Only replace {{ at position 0 and }} at the very end if they appear to be errors
+            if action_part.startswith('{{'):
+                action_part = '{' + action_part[2:]
+                logger.debug("Fixed opening double brace")
+            
+            # Try to find the JSON object (starts with { and ends with })
+            if action_part.startswith('{'):
+                logger.debug(f"ACTION part starts with {{, full content ({len(action_part)} chars): {action_part}")
+                # Count braces to find the complete JSON
+                brace_count = 0
+                json_end = 0
+                in_string = False
+                escape_next = False
+                
+                for i, char in enumerate(action_part):
+                    # Handle string literals (ignore braces inside strings)
+                    if escape_next:
+                        escape_next = False
+                        continue
+                    if char == '\\':
+                        escape_next = True
+                        continue
+                    if char == '"':
+                        in_string = not in_string
+                        continue
+                    
+                    # Only count braces outside of strings
+                    if not in_string:
+                        if char == '{':
+                            brace_count += 1
+                        elif char == '}':
+                            brace_count -= 1
+                            if brace_count == 0:
+                                json_end = i + 1
+                                break
+                
+                logger.debug(f"Brace counting complete, json_end: {json_end}, final brace_count: {brace_count}")
+                if json_end > 0:
+                    action_json = action_part[:json_end]
+                    logger.debug(f"Attempting to parse JSON: {action_json[:100]}")
+                    parsed = json.loads(action_json)
+                    logger.info(f"✓ Successfully parsed ACTION: {parsed}")
+                    return parsed
+                else:
+                    logger.warning("json_end was 0, braces didn't balance")
+            else:
+                logger.warning(f"ACTION part doesn't start with {{, starts with: {action_part[:20]}")
+            
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.error(f"Failed to parse ACTION JSON: {e}, raw: {action_part[:200] if 'action_part' in locals() else 'N/A'}")
+        except Exception as e:
+            logger.error(f"Unexpected error in parse_action: {e}", exc_info=True)
+    
+    elif 'AÇÃO:' in text_upper or 'ACAO:' in text_upper:
+        try:
+            # Find the position of Ação:
+            if 'AÇÃO:' in text_upper:
+                action_start = text_upper.index('AÇÃO:')
+                offset = 5
+            else:
+                action_start = text_upper.index('ACAO:')
+                offset = 5
+            
+            action_part = response_text[action_start + offset:].strip()
+            
+            # Fix double braces ONLY at the very start
+            if action_part.startswith('{{'):
+                action_part = '{' + action_part[2:]
+            
+            if action_part.startswith('{'):
+                brace_count = 0
+                json_end = 0
+                for i, char in enumerate(action_part):
+                    if char == '{':
+                        brace_count += 1
+                    elif char == '}':
+                        brace_count -= 1
+                        if brace_count == 0:
+                            json_end = i + 1
+                            break
+                
+                if json_end > 0:
+                    action_json = action_part[:json_end]
+                    parsed = json.loads(action_json)
+                    logger.debug(f"Successfully parsed AÇÃO: {parsed}")
+                    return parsed
+            
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.warning(f"Failed to parse AÇÃO JSON: {e}")
     
     return None
 
@@ -402,20 +666,21 @@ def parse_action(response_text: str) -> Optional[Dict]:
 def strip_action_line(response_text: str) -> str:
     """
     Remove a linha ACTION: {...} do texto de resposta do LLM.
+    Remove também linhas que começam com "Ação:" (português).
     """
     lines = response_text.strip().split("\n")
     filtered = []
     for line in lines:
         stripped = line.strip()
-        # Remove linhas que começam com ACTION: (case insensitive)
-        if not stripped.upper().startswith("ACTION:"):
+        # Remove linhas que começam com ACTION: ou Ação: (case insensitive)
+        if not (stripped.upper().startswith("ACTION:") or stripped.upper().startswith("AÇÃO:")):
             filtered.append(line)
     result = "\n".join(filtered).strip()
-    # Also remove any trailing ACTION: that might be in the same line
-    if "ACTION:" in result.upper():
-        # Find and remove ACTION: and everything after it in the same line
+    # Also remove any trailing ACTION: or Ação: that might be in the same line
+    if "ACTION:" in result.upper() or "AÇÃO:" in result.upper():
+        # Find and remove ACTION: or Ação: and everything after it in the same line
         import re
-        result = re.sub(r'\s*ACTION:.*$', '', result, flags=re.IGNORECASE | re.MULTILINE)
+        result = re.sub(r'\s*(ACTION|AÇÃO):.*$', '', result, flags=re.IGNORECASE | re.MULTILINE)
     return result.strip()
 
 
@@ -443,11 +708,65 @@ def handle_user_message(
         - used_search: bool - Se foi usada pesquisa web
         - search_results: Optional[List[Dict]] - Resultados da pesquisa se aplicável
     """
-    base_messages = build_messages(history, user_message, user=user)
-    raw_response = call_ollama(base_messages, model=model)
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    try:
+        base_messages = build_messages(history, user_message, user=user)
+        logger.info(f"Built messages for Ollama, total messages: {len(base_messages)}")
+        raw_response = call_ollama(base_messages, model=model)
+        logger.info(f"Received raw response from Ollama, length: {len(raw_response)}")
+    except Exception as e:
+        logger.error(f"Error in handle_user_message during Ollama call: {str(e)}", exc_info=True)
+        raise
     
     action = parse_action(raw_response)
     clean_response = strip_action_line(raw_response)
+    
+    # Debug logging
+    logger.debug(f"Raw response: {raw_response[:200]}")
+    logger.debug(f"Parsed action: {action}")
+    logger.debug(f"Clean response: '{clean_response}'")
+    logger.debug(f"Clean response stripped empty: {not clean_response.strip()}")
+    
+    # If response is empty after removing ACTION, provide default message
+    # Handle both cases: when action is detected AND when response is empty but looks like it had ACTION
+    if not clean_response.strip() and (action or 'ACTION:' in raw_response or 'save_note' in raw_response):
+        # Try to parse action manually if parse_action failed
+        if not action:
+            logger.warning(f"parse_action() returned None but response seems to contain ACTION: {raw_response[:100]}")
+            # Try manual parsing with double brace fix
+            try:
+                # Extract JSON from ACTION: line
+                if 'ACTION:' in raw_response:
+                    action_part = raw_response.split('ACTION:')[1].strip()
+                    # Fix double braces
+                    action_part = action_part.replace('{{', '{').replace('}}', '}')
+                    action = json.loads(action_part)
+                    logger.info(f"Manually parsed action with brace fix: {action}")
+            except Exception as e:
+                logger.error(f"Manual parsing also failed: {e}")
+                # Fallback: at least detect the tool
+                if 'save_note' in raw_response:
+                    action = {'tool': 'save_note', 'args': {}}
+                    logger.info("Manually detected save_note action (no args)")
+        
+        tool_name = action.get('tool', '') if action else ''
+        if tool_name == 'save_note' or 'save_note' in raw_response:
+            clean_response = "Vou criar essa nota para ti."
+        elif tool_name == 'add_shopping_item' or 'add_shopping_item' in raw_response:
+            clean_response = "Vou adicionar isso à lista de compras."
+        elif tool_name == 'add_agenda_event' or 'add_agenda_event' in raw_response:
+            clean_response = "Vou adicionar esse evento à agenda."
+        elif tool_name == 'terminal_command' or 'terminal_command' in raw_response:
+            clean_response = "Vou executar esse comando."
+        elif tool_name == 'homeassistant_call_service' or 'homeassistant_call_service' in raw_response:
+            clean_response = "Entendido, vou fazer isso."
+        elif tool_name == 'homeassistant_get_states' or 'homeassistant_get_states' in raw_response:
+            clean_response = "Vou verificar o estado dos dispositivos."
+        else:
+            clean_response = "Vou tratar disso."
+        logger.info(f"Response was empty after ACTION removal, using default: {clean_response}")
     
     if not action:
         return {

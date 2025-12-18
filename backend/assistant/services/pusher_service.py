@@ -12,20 +12,30 @@ PUSHER_MAX_DATA_SIZE = 8 * 1024  # 8KB
 
 # Global Pusher client instance (lazy initialization)
 _pusher_client: Optional[Pusher] = None
+_cached_app_id: Optional[str] = None
 
 
 def _get_pusher_client() -> Optional[Pusher]:
     """
     Get or create Pusher client instance.
     Uses Soketi configuration which is 100% compatible with Pusher protocol.
+    Recreates the client if configuration changed.
     """
-    global _pusher_client
+    global _pusher_client, _cached_app_id
     
-    if _pusher_client is not None:
+    # Read current configuration
+    current_app_id = getattr(settings, 'SOCKET_APP_ID', '').strip()
+    
+    # Recreate client if config changed or doesn't exist
+    if _pusher_client is None or _cached_app_id != current_app_id:
+        _pusher_client = None  # Clear old client if exists
+        _cached_app_id = current_app_id
+    else:
+        # Client exists and config matches, return cached client
         return _pusher_client
     
-    # Read configuration from settings
-    app_id = getattr(settings, 'SOCKET_APP_ID', '').strip()
+    # Create new client - read configuration from settings
+    app_id = current_app_id  # Use the app_id we already read
     app_key = getattr(settings, 'SOCKET_APP_KEY', '').strip()
     app_secret = getattr(settings, 'SOCKET_APP_SECRET', '').strip()
     host = getattr(settings, 'SOCKET_HOST', 'localhost')
@@ -55,8 +65,8 @@ def _get_pusher_client() -> Optional[Pusher]:
             ssl=use_tls,
         )
         
-        logger.info(f"Pusher client initialized successfully")
-        logger.debug(f"Configuration: host={host}, port={port}, ssl={use_tls}, app_id={app_id[:10]}...")
+        logger.info(f"Pusher client initialized successfully with app_id={app_id}")
+        logger.debug(f"Configuration: host={host}, port={port}, ssl={use_tls}, app_id={app_id}")
         
         return _pusher_client
     except Exception as e:

@@ -89,7 +89,7 @@ def get_homeassistant_states(user: User) -> Dict[str, Any]:
         headers = get_homeassistant_headers(config)
         
         logger.debug(f"Fetching states from {url}")
-        response = requests.get(url, headers=headers, timeout=10)
+        response = requests.get(url, headers=headers, timeout=2)  # Reduced from 10s to 2s
         response.raise_for_status()
         states = response.json()
         

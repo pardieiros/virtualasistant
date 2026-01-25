@@ -57,10 +57,15 @@ const Dashboard = () => {
 
   const navItems = [
     { path: '/', label: 'Chat', icon: '💬' },
+    { path: '/conversation', label: 'Conversa', icon: '📞' },
     { path: '/shopping', label: 'Shopping', icon: '🛒' },
     { path: '/agenda', label: 'Agenda', icon: '📅' },
     { path: '/notes', label: 'Notes', icon: '📝' },
+    { path: '/todo', label: 'To Do', icon: '✅' },
+    { type: 'separator' },
+    { path: '/video', label: 'Video Transcription', icon: '🎬' },
     ...(haEnabled ? [{ path: '/homeassistant', label: 'Home', icon: '🏠' }] : []),
+    { type: 'separator' },
     { path: '/settings', label: 'Settings', icon: '⚙️' },
   ];
 
@@ -114,7 +119,15 @@ const Dashboard = () => {
             </button>
           </div>
           <ul className="space-y-2">
-            {navItems.map((item) => {
+            {navItems.map((item, index) => {
+              if (item.type === 'separator') {
+                return (
+                  <li key={`separator-${index}`} className="my-2">
+                    <div className="h-px bg-primary-gold/20 mx-4"></div>
+                  </li>
+                );
+              }
+              if (!item.path) return null;
               const isActive = location.pathname === item.path;
               return (
                 <li key={item.path}>
@@ -156,7 +169,15 @@ const Dashboard = () => {
                 </button>
               </div>
               <ul className="space-y-2">
-                {navItems.map((item) => {
+                {navItems.map((item, index) => {
+                  if (item.type === 'separator') {
+                    return (
+                      <li key={`separator-${index}`} className="my-2">
+                        <div className="h-px bg-primary-gold/20 mx-4"></div>
+                      </li>
+                    );
+                  }
+                  if (!item.path) return null;
                   const isActive = location.pathname === item.path;
                   return (
                     <li key={item.path}>

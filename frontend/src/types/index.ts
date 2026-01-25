@@ -100,3 +100,15 @@ export interface Conversation {
   updated_at: string;
 }
 
+export interface TodoItem {
+  id: number;
+  title: string;
+  description: string;
+  priority: 'low' | 'medium' | 'high';
+  status: 'pending' | 'completed' | 'cancelled';
+  due_date: string | null;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
+}
+

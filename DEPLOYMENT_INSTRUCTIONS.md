@@ -426,3 +426,17 @@ Qualquer dúvida, consulta a documentação ou corre `./test_streaming.sh` para 
 **Autor:** AI Assistant
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+

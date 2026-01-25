@@ -6,8 +6,11 @@ import Chat from './pages/Chat';
 import ShoppingList from './pages/ShoppingList';
 import Agenda from './pages/Agenda';
 import Notes from './pages/Notes';
+import TodoList from './pages/TodoList';
 import Settings from './pages/Settings';
 import HomeAssistant from './pages/HomeAssistant';
+import Conversation from './pages/Conversation';
+import VideoTranscription from './pages/VideoTranscription';
 
 const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { isAuthenticated, loading } = useAuth();
@@ -41,7 +44,10 @@ function App() {
             <Route path="shopping" element={<ShoppingList />} />
             <Route path="agenda" element={<Agenda />} />
             <Route path="notes" element={<Notes />} />
+            <Route path="todo" element={<TodoList />} />
+            <Route path="conversation" element={<Conversation />} />
             <Route path="homeassistant" element={<HomeAssistant />} />
+            <Route path="video" element={<VideoTranscription />} />
             <Route path="settings" element={<Settings />} />
           </Route>
         </Routes>

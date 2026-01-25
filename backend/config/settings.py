@@ -340,3 +340,11 @@ LOGGING = {
 LOGS_DIR = os.path.join(BASE_DIR, 'logs')
 os.makedirs(LOGS_DIR, exist_ok=True)
 
+# File Upload Configuration (for video uploads)
+# Use smaller memory size to force Django to use temporary files for large uploads
+# Files larger than this will be written to disk instead of memory
+DATA_UPLOAD_MAX_MEMORY_SIZE = 10485760  # 10MB - force large files to disk
+FILE_UPLOAD_MAX_MEMORY_SIZE = 10485760  # 10MB - force large files to disk
+DATA_UPLOAD_MAX_NUMBER_FIELDS = 10240
+FILE_UPLOAD_TEMP_DIR = None  # Use system temp directory
+

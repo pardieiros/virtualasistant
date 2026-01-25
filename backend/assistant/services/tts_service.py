@@ -8,7 +8,9 @@ logger = logging.getLogger(__name__)
 
 def generate_speech(text: str) -> Optional[bytes]:
     """
-    Generate speech audio from text using the Piper TTS service.
+    Generate speech audio from text using the Coqui TTS service.
+    
+    See COQUI_TTS_API_DOCUMENTATION.md for API interface specifications.
     
     Args:
         text: Text to convert to speech
@@ -16,7 +18,7 @@ def generate_speech(text: str) -> Optional[bytes]:
     Returns:
         Audio data as bytes (WAV format) or None if error
     """
-    tts_url = getattr(settings, 'TTS_SERVICE_URL', 'http://192.168.1.73:8010/api/tts/')
+    tts_url = getattr(settings, 'TTS_SERVICE_URL', 'http://192.168.1.68:8010/api/tts/')
     
     if not tts_url:
         logger.warning("TTS service URL not configured")

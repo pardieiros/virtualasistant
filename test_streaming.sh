@@ -114,3 +114,17 @@ echo "  3. Monitor logs: docker-compose logs -f backend nginx"
 echo ""
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+

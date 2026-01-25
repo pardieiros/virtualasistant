@@ -10,7 +10,8 @@ import type {
   UserNotificationPreferences,
   TerminalAPIConfig,
   Conversation,
-  ConversationMessage
+  ConversationMessage,
+  TodoItem
 } from '../types';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api';
@@ -139,6 +140,28 @@ export const notesAPI = {
   
   delete: async (id: number): Promise<void> => {
     await apiClient.delete(`/notes/${id}/`);
+  },
+};
+
+// Todo API
+export const todoAPI = {
+  list: async (params?: { status?: string; priority?: string }): Promise<TodoItem[]> => {
+    const response = await apiClient.get('/todos/', { params });
+    return response.data.results || response.data;
+  },
+  
+  create: async (todo: Partial<TodoItem>): Promise<TodoItem> => {
+    const response = await apiClient.post('/todos/', todo);
+    return response.data;
+  },
+  
+  update: async (id: number, todo: Partial<TodoItem>): Promise<TodoItem> => {
+    const response = await apiClient.patch(`/todos/${id}/`, todo);
+    return response.data;
+  },
+  
+  delete: async (id: number): Promise<void> => {
+    await apiClient.delete(`/todos/${id}/`);
   },
 };
 

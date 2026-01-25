@@ -267,3 +267,17 @@ Se vires warnings sobre buffering, ajusta a config.
 - [Django StreamingHttpResponse](https://docs.djangoproject.com/en/stable/ref/request-response/#streaminghttpresponse-objects)
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+

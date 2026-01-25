@@ -453,6 +453,7 @@ const Chat = () => {
                 <li>📝 <strong>Notas:</strong> Cria e gere notas</li>
                 <li>📅 <strong>Eventos:</strong> Cria eventos na agenda</li>
                 <li>🛒 <strong>Lista de Compras:</strong> Adiciona itens à lista de compras</li>
+                <li>✅ <strong>To Do List:</strong> Adiciona tarefas à lista de tarefas</li>
                 <li>🏠 <strong>Casa Inteligente:</strong> Controla dispositivos Home Assistant</li>
                 <li>💻 <strong>Terminal:</strong> Verifica containers, VMs e sistema</li>
               </ul>
@@ -519,8 +520,8 @@ const Chat = () => {
                 }
               }}
               placeholder="Type your message or use voice input..."
-              className="input-field w-full resize-none min-h-[44px] sm:min-h-[50px] md:min-h-[60px] max-h-32 text-xs sm:text-sm md:text-base"
-              rows={2}
+              className="input-field w-full resize-none min-h-[44px] sm:min-h-[50px] md:min-h-[60px] h-[44px] sm:h-[50px] md:h-[60px] max-h-[44px] sm:max-h-[50px] md:max-h-[60px] text-xs sm:text-sm md:text-base overflow-y-hidden"
+              rows={1}
               disabled={continuousMode}
             />
             {(isListening || continuousMode) && !voiceModalOpen && (

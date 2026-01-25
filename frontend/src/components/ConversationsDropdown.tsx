@@ -87,7 +87,7 @@ const ConversationsDropdown = ({
           />
           
           {/* Dropdown */}
-          <div className="absolute right-0 bottom-full mb-2 w-64 sm:w-72 md:w-80 bg-dark-warm-gray/95 backdrop-blur-sm border border-primary-gold/20 rounded-lg shadow-2xl z-50 max-h-[70vh] overflow-y-auto">
+          <div className="absolute left-0 bottom-full mb-2 w-64 sm:w-72 md:w-80 bg-dark-warm-gray/95 backdrop-blur-sm border border-primary-gold/20 rounded-lg shadow-2xl z-50 max-h-[70vh] overflow-y-auto">
             <div className="p-3 md:p-4">
               <div className="flex items-center justify-between mb-3 md:mb-4">
                 <h3 className="text-sm md:text-base font-semibold text-text-light">Conversations</h3>

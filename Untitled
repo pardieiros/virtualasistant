@@ -1,0 +1,221 @@
+Aqui vai uma documentação (tipo README + referência de API) para esse serviço STT. Podes copiar para README.md dentro de /opt/ai-engine/stt/.
+
+⸻
+
+AI Engine — STT Service (FastAPI + faster-whisper)
+
+Serviço HTTP para Speech-to-Text (STT) baseado em FastAPI e faster-whisper, com pré-processamento de áudio via ffmpeg (mono 16 kHz + filtros simples).
+
+Visão geral
+	•	Recebe um ficheiro de áudio (mp3/wav/webm/etc.)
+	•	Converte para WAV mono 16kHz
+	•	Aplica filtros (highpass/lowpass/denoise/normalização)
+	•	Transcreve com faster-whisper
+	•	Devolve texto e (opcionalmente) segmentos
+
+⸻
+
+Requisitos
+
+Sistema
+	•	Linux (Ubuntu)
+	•	ffmpeg instalado e disponível no PATH
+
+ffmpeg -version
+
+
+
+Python
+	•	Python + virtualenv (ex.: /opt/ai-engine/stt/venv)
+	•	Dependências:
+	•	fastapi
+	•	uvicorn
+	•	faster-whisper
+
+⸻
+
+Variáveis de ambiente
+
+O serviço lê estas variáveis:
+
+Variável	Default	Descrição
+WHISPER_MODEL	tiny	Modelo Whisper (ex.: tiny, small, medium, large-v3)
+WHISPER_DEVICE	cuda	Dispositivo (cuda ou cpu)
+WHISPER_COMPUTE_TYPE	float16	Tipo de compute (ex.: float16, int8, int8_float16)
+TMP_DIR	/opt/ai-engine/tmp	Pasta para ficheiros temporários (upload + WAV convertido)
+
+Exemplo de ficheiro .env:
+
+STT_HOST=0.0.0.0
+STT_PORT=8008
+WHISPER_MODEL=small
+WHISPER_DEVICE=cuda
+WHISPER_COMPUTE_TYPE=int8_float16
+TMP_DIR=/opt/ai-engine/tmp
+
+
+⸻
+
+Como correr
+
+Local (uvicorn)
+
+export STT_HOST=0.0.0.0
+export STT_PORT=8008
+uvicorn app:app --host $STT_HOST --port $STT_PORT
+
+systemd (exemplo)
+
+O serviço normalmente é gerido via systemctl (ex.: ai-stt.service).
+
+Comandos úteis:
+
+sudo systemctl restart ai-stt
+sudo systemctl status ai-stt --no-pager -l
+sudo journalctl -u ai-stt -n 200 --no-pager
+
+
+⸻
+
+Endpoints
+
+1) Health Check
+
+GET /health
+
+Resposta 200
+
+{
+  "ok": true,
+  "model": "tiny",
+  "device": "cuda",
+  "compute_type": "float16"
+}
+
+Uso
+
+curl -s http://127.0.0.1:8008/health | jq
+
+
+⸻
+
+2) Transcrever áudio
+
+POST /stt/transcribe
+
+Query params
+	•	language (opcional, default: pt) — idioma ISO (ex.: pt, en, es)
+
+Form-data
+	•	file (obrigatório) — ficheiro áudio
+
+Exemplo
+
+curl --max-time 30 -s \
+  -X POST "http://127.0.0.1:8008/stt/transcribe?language=pt" \
+  -F "file=@/root/teste.mp3" | jq
+
+Resposta (exemplo)
+
+{
+  "text": "…",
+  "segments": [
+    {"start": 0.0, "end": 1.24, "text": "…"}
+  ],
+  "duration": 9.57,
+  "lang": "pt"
+}
+
+Nota: o conteúdo exato depende do que estiveres a devolver no teu return final (o snippet que enviaste está truncado a meio do model.transcribe(...)).
+
+⸻
+
+Pipeline interno
+
+1) Upload e staging
+	•	O ficheiro recebido é guardado em:
+	•	TMP_DIR/in_<uuid>
+	•	O WAV convertido é:
+	•	TMP_DIR/in_<uuid>.wav
+
+2) Conversão / normalização (to_wav_16k_mono)
+
+Executa:
+	•	mono: -ac 1
+	•	sample rate: -ar 16000
+	•	remove vídeo: -vn
+	•	filtros:
+	•	highpass=f=80 (remove rumble grave)
+	•	lowpass=f=8000 (corta agudos acima de 8k)
+	•	afftdn=nf=-25 (redução de ruído por FFT)
+	•	dynaudnorm=f=150:g=15 (normalização dinâmica)
+
+Comando base:
+
+ffmpeg -y -i INPUT -ac 1 -ar 16000 -vn \
+-af "highpass=f=80, lowpass=f=8000, afftdn=nf=-25, dynaudnorm=f=150:g=15" \
+OUTPUT.wav
+
+3) Transcrição (faster-whisper)
+
+O modelo é carregado ao iniciar o serviço:
+
+model = WhisperModel(MODEL_NAME, device=DEVICE, compute_type=COMPUTE_TYPE)
+
+Depois no endpoint:
+
+segments, info = model.transcribe(...)
+
+
+⸻
+
+Boas práticas / afinação rápida
+
+Melhorar qualidade
+	•	Subir o modelo (small → medium → large-v3) costuma melhorar muito a qualidade.
+	•	Se estiveres em GPU mas com erros de float16:
+	•	tenta WHISPER_COMPUTE_TYPE=int8_float16 (muito comum em GPU)
+	•	ou int8 (mais compatível, menos qualidade)
+
+Ajustar o filtro de ruído
+
+Se notares que o Whisper “come” sílabas/consoantes, baixa o denoise:
+	•	afftdn=nf=-25 → afftdn=nf=-15
+
+⸻
+
+Troubleshooting
+
+Empty reply from server
+
+Normalmente significa que o processo crashou durante a transcrição. Ver:
+
+sudo journalctl -u ai-stt -n 200 --no-pager -l
+tail -n 200 /var/log/ai-engine/stt.err.log
+
+Erros CUDA / cuDNN / cuBLAS
+
+Se vires erros tipo:
+	•	Unable to load libcudnn...
+	•	Invalid handle. Cannot load symbol cublasLtGetVersion
+	•	Requested float16 compute type...
+
+Sugestões:
+	•	confirmar libs no sistema (ldconfig -p | grep -i cudnn, etc.)
+	•	testar WHISPER_DEVICE=cpu para isolar
+	•	usar WHISPER_COMPUTE_TYPE=int8_float16 em vez de float16
+
+⸻
+
+Segurança
+	•	Este serviço aceita ficheiros arbitrários. Se expuseres para fora:
+	•	mete reverse proxy + auth
+	•	limita tamanho de upload
+	•	considera rate limiting
+	•	guarda TMP_DIR num disco com espaço e limpeza periódica
+
+⸻
+
+Se quiseres, eu também te escrevo:
+	•	um OpenAPI/Swagger description mais “bonita” (com exemplos),
+	•	e a secção final do endpoint (o model.transcribe(...) + return JSONResponse(...)) já com beam search + VAD + anti-alucinação para PT.

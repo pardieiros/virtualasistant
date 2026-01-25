@@ -14,6 +14,10 @@ export const decodeJWT = (token: string): any => {
   }
 };
 
+export const getToken = (): string | null => {
+  return localStorage.getItem('access_token');
+};
+
 export const getUserIdFromToken = (): number | null => {
   const token = localStorage.getItem('access_token');
   if (!token) return null;

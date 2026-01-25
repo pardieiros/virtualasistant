@@ -155,7 +155,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-HF_TOKEN = os.getenv("HF_TOKEN", "REDACTED_HF_TOKEN")  # para diarização pyannote
+HF_TOKEN = os.getenv("HF_TOKEN")  # para diarização pyannote
 
 # GPU/CPU settings (ajusta)
 DEVICE = os.getenv("ASR_DEVICE", "cpu")            # "cuda" para RTX, "cpu" para teste

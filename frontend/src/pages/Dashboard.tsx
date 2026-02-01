@@ -57,6 +57,7 @@ const Dashboard = () => {
 
   const navItems = [
     { path: '/', label: 'Chat', icon: '💬' },
+    { path: '/actions', label: 'Quick Actions', icon: '⚡' },
     { path: '/conversation', label: 'Conversa', icon: '📞' },
     { path: '/shopping', label: 'Shopping', icon: '🛒' },
     { path: '/agenda', label: 'Agenda', icon: '📅' },

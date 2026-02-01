@@ -281,3 +281,41 @@ class TodoItem(models.Model):
     def __str__(self):
         return f"{self.title} ({self.user.username})"
 
+
+class VideoTranscription(models.Model):
+    """
+    Stores video transcription results with speaker diarization.
+    Each transcription belongs to a user and can have speaker mappings.
+    """
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='video_transcriptions')
+    filename = models.CharField(max_length=500, help_text="Original video filename")
+    transcription_text = models.TextField(help_text="Full transcription text with timestamps and speakers")
+    language = models.CharField(max_length=10, default='pt', help_text="Detected or selected language")
+    diarization_enabled = models.BooleanField(default=True, help_text="Whether speaker diarization was enabled")
+    speaker_mappings = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Mapping of speaker IDs (User1, User2, etc.) to actual names"
+    )
+    summary = models.TextField(
+        blank=True,
+        null=True,
+        help_text="AI-generated summary of the meeting/conversation"
+    )
+    summary_generating = models.BooleanField(
+        default=False,
+        help_text="Whether summary generation is in progress"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['user', 'created_at']),
+            models.Index(fields=['user', 'updated_at']),
+        ]
+    
+    def __str__(self):
+        return f"Transcription {self.id} - {self.filename} ({self.user.username})"
+

@@ -1,7 +1,7 @@
 from rest_framework import serializers
 from django.contrib.auth.models import User
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
-from .models import ShoppingItem, AgendaEvent, Note, HomeAssistantConfig, PushSubscription, UserNotificationPreferences, Conversation, ConversationMessage, TerminalAPIConfig, DeviceAlias
+from .models import ShoppingItem, AgendaEvent, Note, HomeAssistantConfig, PushSubscription, UserNotificationPreferences, Conversation, ConversationMessage, TerminalAPIConfig, DeviceAlias, TodoItem, VideoTranscription
 
 
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
@@ -140,3 +140,40 @@ class DeviceAliasSerializer(serializers.ModelSerializer):
         model = DeviceAlias
         fields = ['id', 'entity_id', 'alias', 'area', 'created_at', 'updated_at']
         read_only_fields = ['id', 'created_at', 'updated_at']
+
+
+class TodoItemSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = TodoItem
+        fields = [
+            'id', 'title', 'description', 'priority', 'status',
+            'due_date', 'created_at', 'updated_at', 'completed_at'
+        ]
+        read_only_fields = ['created_at', 'updated_at', 'completed_at']
+
+
+class VideoTranscriptionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = VideoTranscription
+        fields = [
+            'id', 'filename', 'transcription_text', 'language',
+            'diarization_enabled', 'speaker_mappings', 'summary',
+            'summary_generating', 'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at', 'summary_generating']
+
+
+class VideoTranscriptionCreateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = VideoTranscription
+        fields = [
+            'filename', 'transcription_text', 'language',
+            'diarization_enabled', 'speaker_mappings'
+        ]
+
+
+class SpeakerMappingUpdateSerializer(serializers.Serializer):
+    speaker_mappings = serializers.DictField(
+        child=serializers.CharField(allow_blank=True),
+        help_text="Mapping of speaker IDs (User1, User2, etc.) to actual names"
+    )

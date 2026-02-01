@@ -11,7 +11,8 @@ import type {
   TerminalAPIConfig,
   Conversation,
   ConversationMessage,
-  TodoItem
+  TodoItem,
+  VideoTranscription
 } from '../types';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api';
@@ -333,6 +334,178 @@ export const conversationsAPI = {
   
   delete: async (id: number): Promise<void> => {
     await apiClient.delete(`/conversations/${id}/`);
+  },
+};
+
+// Video Upload API
+export const videoAPI = {
+  upload: async (file: File, onProgress?: (progress: number) => void): Promise<{ success: boolean; filename: string; message: string }> => {
+    // For larger files, use chunked upload to avoid 504/502 and memory spikes.
+    // Each chunk is small and finishes quickly, so proxies/timeouts are much less likely to fail.
+    const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB
+    const CHUNK_THRESHOLD = 50 * 1024 * 1024; // 50MB
+
+    const makeUploadId = (): string => {
+      try {
+        // Modern browsers
+        if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
+          return (crypto as any).randomUUID();
+        }
+      } catch {
+        // ignore
+      }
+      // Fallback (not cryptographically strong, but OK as a session id)
+      return `u_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    };
+
+    if (file.size >= CHUNK_THRESHOLD) {
+      const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+      const uploadId = makeUploadId();
+
+      let lastResponse: any = null;
+
+      for (let i = 0; i < totalChunks; i++) {
+        const start = i * CHUNK_SIZE;
+        const end = Math.min(file.size, start + CHUNK_SIZE);
+        const chunk = file.slice(start, end);
+
+        lastResponse = await apiClient.post('/video/upload/chunk/', chunk, {
+          headers: {
+            'Content-Type': 'application/octet-stream',
+            'X-Upload-Id': uploadId,
+            'X-Chunk-Index': String(i),
+            'X-Total-Chunks': String(totalChunks),
+            'X-Filename': file.name,
+          },
+          timeout: 300000, // 5 minutes per chunk (should be plenty)
+        });
+
+        if (onProgress) {
+          const percentCompleted = Math.round(((i + 1) * 100) / totalChunks);
+          onProgress(percentCompleted);
+        }
+      }
+
+      return lastResponse.data;
+    }
+
+    const formData = new FormData();
+    formData.append('video', file);
+    
+    const token = localStorage.getItem('access_token');
+    
+    const response = await axios.post(`${API_BASE_URL}/video/upload/`, formData, {
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'multipart/form-data',
+      },
+      onUploadProgress: (progressEvent) => {
+        if (onProgress && progressEvent.total) {
+          const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total);
+          onProgress(percentCompleted);
+        }
+      },
+    });
+    
+    return response.data;
+  },
+};
+
+// STT API (Speech-to-Text Transcription) - All requests go through backend
+export const sttAPI = {
+  health: async (): Promise<any> => {
+    const response = await apiClient.get('/stt/health/');
+    return response.data;
+  },
+  
+  createJob: async (filename: string, lang: string = 'pt', model: string = 'small', diarize: boolean = true): Promise<{ job_id: string; status: string }> => {
+    const response = await apiClient.post('/stt/jobs/', {
+      filename,
+      lang,
+      model,
+      diarize,
+    });
+    return response.data;
+  },
+  
+  getJobStatus: async (jobId: string): Promise<any> => {
+    const response = await apiClient.get(`/stt/jobs/${jobId}/`);
+    return response.data;
+  },
+  
+  getJobResult: async (jobId: string): Promise<{ job_id: string; diarization: boolean; language: string; text: string }> => {
+    const response = await apiClient.get(`/stt/jobs/${jobId}/result/`);
+    return response.data;
+  },
+  
+  subscribeToJobEvents: (jobId: string, onEvent: (event: any) => void): EventSource => {
+    const token = localStorage.getItem('access_token');
+    const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || '/api';
+    // EventSource doesn't support custom headers, so we pass token as query parameter
+    // The backend will validate it
+    const url = token 
+      ? `${apiBaseUrl}/stt/jobs/${jobId}/events/?token=${encodeURIComponent(token)}`
+      : `${apiBaseUrl}/stt/jobs/${jobId}/events/`;
+    
+    const eventSource = new EventSource(url, {
+      withCredentials: true,
+    });
+    
+    eventSource.onmessage = (event) => {
+      try {
+        // SSE events can be in format "data: {...}" or just "{...}"
+        let dataStr = event.data;
+        if (dataStr.startsWith('data: ')) {
+          dataStr = dataStr.substring(6);
+        }
+        const data = JSON.parse(dataStr);
+        onEvent(data);
+      } catch (error) {
+        console.error('Error parsing SSE event:', error);
+      }
+    };
+    
+    eventSource.onerror = (error) => {
+      console.error('SSE error:', error);
+      eventSource.close();
+    };
+    
+    return eventSource;
+  },
+};
+
+// Video Transcription API
+export const videoTranscriptionAPI = {
+  list: async (): Promise<VideoTranscription[]> => {
+    const response = await apiClient.get('/video-transcriptions/');
+    return response.data.results || response.data;
+  },
+  
+  get: async (id: number): Promise<VideoTranscription> => {
+    const response = await apiClient.get(`/video-transcriptions/${id}/`);
+    return response.data;
+  },
+  
+  create: async (data: {
+    filename: string;
+    transcription_text: string;
+    language: string;
+    diarization_enabled: boolean;
+    speaker_mappings?: Record<string, string>;
+  }): Promise<VideoTranscription> => {
+    const response = await apiClient.post('/video-transcriptions/', data);
+    return response.data;
+  },
+  
+  updateSpeakers: async (id: number, speakerMappings: Record<string, string>): Promise<VideoTranscription> => {
+    const response = await apiClient.patch(`/video-transcriptions/${id}/speakers/`, {
+      speaker_mappings: speakerMappings,
+    });
+    return response.data;
+  },
+  
+  delete: async (id: number): Promise<void> => {
+    await apiClient.delete(`/video-transcriptions/${id}/`);
   },
 };
 

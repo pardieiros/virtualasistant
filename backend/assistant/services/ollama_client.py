@@ -12,6 +12,53 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+def _normalize_llm_action_json(text: str) -> str:
+    """
+    Normalize common LLM JSON formatting glitches.
+
+    Specifically, some models output double braces like {{ ... }} (often from template languages).
+    This function collapses double braces ONLY outside of string literals so we don't corrupt JSON
+    contained inside strings.
+    """
+    out_chars: list[str] = []
+    in_string = False
+    escape_next = False
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if escape_next:
+            out_chars.append(ch)
+            escape_next = False
+            i += 1
+            continue
+        if ch == "\\":
+            out_chars.append(ch)
+            escape_next = True
+            i += 1
+            continue
+        if ch == '"':
+            out_chars.append(ch)
+            in_string = not in_string
+            i += 1
+            continue
+
+        if not in_string:
+            # Collapse "{{" -> "{"
+            if ch == "{" and i + 1 < len(text) and text[i + 1] == "{":
+                out_chars.append("{")
+                i += 2
+                continue
+            # Collapse "}}" -> "}"
+            if ch == "}" and i + 1 < len(text) and text[i + 1] == "}":
+                out_chars.append("}")
+                i += 2
+                continue
+
+        out_chars.append(ch)
+        i += 1
+
+    return "".join(out_chars)
+
 def get_base_system_prompt() -> str:
     """
     Get the base system prompt (static part, no user/time data).
@@ -609,10 +656,22 @@ def parse_action(response_text: str) -> Optional[Dict]:
                 logger.debug(f"Brace counting complete, json_end: {json_end}, final brace_count: {brace_count}")
                 if json_end > 0:
                     action_json = action_part[:json_end]
-                    logger.debug(f"Attempting to parse JSON: {action_json[:100]}")
-                    parsed = json.loads(action_json)
-                    logger.info(f"✓ Successfully parsed ACTION: {parsed}")
-                    return parsed
+                    # First attempt: raw parse
+                    try:
+                        logger.debug(f"Attempting to parse JSON: {action_json[:100]}")
+                        parsed = json.loads(action_json)
+                        logger.info(f"✓ Successfully parsed ACTION: {parsed}")
+                        return parsed
+                    except json.JSONDecodeError as e:
+                        # Second attempt: normalize common LLM brace glitches ({{ }})
+                        normalized = _normalize_llm_action_json(action_json)
+                        logger.warning(
+                            f"Failed to parse ACTION JSON on first attempt: {e}. "
+                            f"Retrying with normalized braces."
+                        )
+                        parsed = json.loads(normalized)
+                        logger.info(f"✓ Successfully parsed ACTION after normalization: {parsed}")
+                        return parsed
                 else:
                     logger.warning("json_end was 0, braces didn't balance")
             else:
@@ -653,9 +712,15 @@ def parse_action(response_text: str) -> Optional[Dict]:
                 
                 if json_end > 0:
                     action_json = action_part[:json_end]
-                    parsed = json.loads(action_json)
-                    logger.debug(f"Successfully parsed AÇÃO: {parsed}")
-                    return parsed
+                    try:
+                        parsed = json.loads(action_json)
+                        logger.debug(f"Successfully parsed AÇÃO: {parsed}")
+                        return parsed
+                    except json.JSONDecodeError:
+                        normalized = _normalize_llm_action_json(action_json)
+                        parsed = json.loads(normalized)
+                        logger.debug(f"Successfully parsed AÇÃO after normalization: {parsed}")
+                        return parsed
             
         except (json.JSONDecodeError, ValueError) as e:
             logger.warning(f"Failed to parse AÇÃO JSON: {e}")

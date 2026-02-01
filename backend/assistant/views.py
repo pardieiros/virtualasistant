@@ -7,7 +7,7 @@ from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import filters
 from django.db.models import Q
 
-from .models import ShoppingItem, AgendaEvent, Note, HomeAssistantConfig, PushSubscription, UserNotificationPreferences, Conversation, ConversationMessage, TerminalAPIConfig, DeviceAlias
+from .models import ShoppingItem, AgendaEvent, Note, HomeAssistantConfig, PushSubscription, UserNotificationPreferences, Conversation, ConversationMessage, TerminalAPIConfig, DeviceAlias, TodoItem, VideoTranscription
 from .serializers import DeviceAliasSerializer
 from .services.homeassistant_client import (
     get_homeassistant_states,
@@ -26,6 +26,10 @@ from .serializers import (
     ConversationDetailSerializer,
     ConversationMessageSerializer,
     TerminalAPIConfigSerializer,
+    TodoItemSerializer,
+    VideoTranscriptionSerializer,
+    VideoTranscriptionCreateSerializer,
+    SpeakerMappingUpdateSerializer,
 )
 from .services.ollama_client import handle_user_message, build_messages, stream_ollama_chat
 from .services.tool_dispatcher import dispatch_tool
@@ -1309,4 +1313,518 @@ class PushSubscriptionViewSet(viewsets.ModelViewSet):
                 {'success': False, 'error': str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+
+
+class VideoUploadView(APIView):
+    """
+    Upload video file to the videos directory for transcription.
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def post(self, request):
+        import logging
+        import os
+        from django.conf import settings
+        
+        logger = logging.getLogger(__name__)
+        
+        if 'video' not in request.FILES:
+            return Response(
+                {'error': 'No video file provided'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        video_file = request.FILES['video']
+        
+        # Validate file type
+        allowed_extensions = ['.mp4', '.avi', '.mov', '.mkv', '.webm']
+        file_ext = os.path.splitext(video_file.name)[1].lower()
+        if file_ext not in allowed_extensions:
+            return Response(
+                {'error': f'Invalid file type. Allowed: {", ".join(allowed_extensions)}'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Limit file size to 2GB to prevent timeouts and resource exhaustion
+        MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024  # 2GB
+        if hasattr(video_file, 'size') and video_file.size > MAX_FILE_SIZE:
+            return Response(
+                {'error': f'File too large. Maximum size is 2GB. Your file is {video_file.size / (1024*1024*1024):.2f}GB'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Get videos directory path from settings
+        videos_dir = getattr(settings, 'VIDEOS_DIR', os.path.join(settings.BASE_DIR, 'videos'))
+        
+        # Create directory if it doesn't exist
+        os.makedirs(videos_dir, exist_ok=True)
+        
+        # Save file with streaming to avoid memory issues
+        try:
+            file_path = os.path.join(videos_dir, video_file.name)
+            # Handle duplicate filenames
+            counter = 1
+            base_name, ext = os.path.splitext(video_file.name)
+            while os.path.exists(file_path):
+                new_name = f"{base_name}_{counter}{ext}"
+                file_path = os.path.join(videos_dir, new_name)
+                counter += 1
+            
+            # Use streaming write with limited chunk size to avoid memory issues
+            CHUNK_SIZE = 512 * 1024  # 512KB chunks (smaller for better memory management)
+            bytes_written = 0
+            last_flush = 0
+            
+            with open(file_path, 'wb+') as destination:
+                for chunk in video_file.chunks(CHUNK_SIZE):
+                    destination.write(chunk)
+                    bytes_written += len(chunk)
+                    
+                    # Flush every 5MB to ensure data is written and memory is freed
+                    if bytes_written - last_flush >= 5 * 1024 * 1024:  # Every 5MB
+                        destination.flush()
+                        os.fsync(destination.fileno())
+                        last_flush = bytes_written
+                        
+                        # Check size during upload to prevent oversized files
+                        if bytes_written > MAX_FILE_SIZE:
+                            os.remove(file_path)
+                            return Response(
+                                {'error': 'File size exceeds 2GB limit during upload'},
+                                status=status.HTTP_400_BAD_REQUEST
+                            )
+                
+                # Final flush
+                destination.flush()
+                os.fsync(destination.fileno())
+            
+            # Verify final file size
+            final_size = os.path.getsize(file_path)
+            if final_size > MAX_FILE_SIZE:
+                os.remove(file_path)
+                return Response(
+                    {'error': 'File size exceeds 2GB limit'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            filename = os.path.basename(file_path)
+            logger.info(f"Video uploaded successfully: {filename} ({final_size / (1024*1024):.2f}MB) by user {request.user.id}")
+            
+            return Response({
+                'success': True,
+                'filename': filename,
+                'message': 'Video uploaded successfully',
+                'size_mb': round(final_size / (1024 * 1024), 2)
+            }, status=status.HTTP_201_CREATED)
+            
+        except Exception as e:
+            logger.error(f"Error uploading video: {str(e)}", exc_info=True)
+            # Clean up partial file if it exists
+            if 'file_path' in locals() and os.path.exists(file_path):
+                try:
+                    os.remove(file_path)
+                except:
+                    pass
+            return Response(
+                {'error': f'Failed to upload video: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class VideoUploadChunkView(APIView):
+    """
+    Chunked upload endpoint to avoid gateway timeouts and backend memory spikes.
+
+    The client uploads the file in small chunks as raw bytes (application/octet-stream).
+    Required headers:
+      - X-Upload-Id: UUID for this upload session
+      - X-Chunk-Index: 0-based index
+      - X-Total-Chunks: total number of chunks
+      - X-Filename: original filename (used for extension validation / final naming)
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        import logging
+        import os
+        import re
+        import shutil
+        import uuid
+        from django.conf import settings
+
+        logger = logging.getLogger(__name__)
+
+        upload_id = (request.headers.get('X-Upload-Id') or '').strip()
+        chunk_index_raw = (request.headers.get('X-Chunk-Index') or '').strip()
+        total_chunks_raw = (request.headers.get('X-Total-Chunks') or '').strip()
+        original_filename = (request.headers.get('X-Filename') or '').strip()
+
+        if not upload_id or not chunk_index_raw or not total_chunks_raw or not original_filename:
+            return Response(
+                {'error': 'Missing required headers: X-Upload-Id, X-Chunk-Index, X-Total-Chunks, X-Filename'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            uuid.UUID(upload_id)
+        except Exception:
+            return Response({'error': 'Invalid X-Upload-Id (must be a UUID)'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            chunk_index = int(chunk_index_raw)
+            total_chunks = int(total_chunks_raw)
+        except ValueError:
+            return Response({'error': 'Invalid chunk index/total (must be integers)'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if total_chunks <= 0 or chunk_index < 0 or chunk_index >= total_chunks:
+            return Response({'error': 'Invalid chunk index/total range'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Validate extension early (based on original filename)
+        allowed_extensions = ['.mp4', '.avi', '.mov', '.mkv', '.webm']
+        base_name = os.path.basename(original_filename)
+        _, ext = os.path.splitext(base_name)
+        ext = ext.lower()
+        if ext not in allowed_extensions:
+            return Response(
+                {'error': f'Invalid file type. Allowed: {", ".join(allowed_extensions)}'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Limit sizes for safety
+        MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024  # 2GB total
+        MAX_CHUNK_SIZE = 10 * 1024 * 1024  # 10MB per request
+
+        # Determine directories
+        videos_dir = getattr(settings, 'VIDEOS_DIR', os.path.join(settings.BASE_DIR, 'videos'))
+        os.makedirs(videos_dir, exist_ok=True)
+
+        staging_root = os.path.join(videos_dir, '.chunk_uploads', f'user_{request.user.id}', upload_id)
+        os.makedirs(staging_root, exist_ok=True)
+
+        # Read chunk bytes (keep chunks small to avoid memory spikes)
+        chunk_bytes = request.body or b''
+        if not chunk_bytes:
+            return Response({'error': 'Empty chunk body'}, status=status.HTTP_400_BAD_REQUEST)
+        if len(chunk_bytes) > MAX_CHUNK_SIZE:
+            return Response({'error': f'Chunk too large. Max chunk size is {MAX_CHUNK_SIZE} bytes'}, status=status.HTTP_400_BAD_REQUEST)
+
+        chunk_path = os.path.join(staging_root, f'chunk_{chunk_index:06d}.part')
+        try:
+            with open(chunk_path, 'wb') as f:
+                f.write(chunk_bytes)
+        except Exception as e:
+            logger.error(f"Failed to write chunk {chunk_index} for upload {upload_id}: {e}", exc_info=True)
+            return Response({'error': 'Failed to write chunk'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        # If not last chunk, acknowledge progress
+        if chunk_index != total_chunks - 1:
+            progress = round(((chunk_index + 1) / total_chunks) * 100)
+            return Response(
+                {
+                    'success': True,
+                    'upload_id': upload_id,
+                    'chunk_index': chunk_index,
+                    'total_chunks': total_chunks,
+                    'progress': progress,
+                    'message': 'Chunk uploaded',
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        # Last chunk: assemble file
+        try:
+            # Ensure all chunks exist
+            missing = []
+            total_size = 0
+            for i in range(total_chunks):
+                p = os.path.join(staging_root, f'chunk_{i:06d}.part')
+                if not os.path.exists(p):
+                    missing.append(i)
+                else:
+                    total_size += os.path.getsize(p)
+                    if total_size > MAX_FILE_SIZE:
+                        raise ValueError('File size exceeds 2GB limit')
+
+            if missing:
+                return Response(
+                    {'error': f'Missing chunks: {missing[:10]}{"..." if len(missing) > 10 else ""}'},
+                    status=status.HTTP_409_CONFLICT,
+                )
+
+            # Sanitize final filename (avoid weird chars)
+            safe_base = re.sub(r'[^A-Za-z0-9._-]+', '_', os.path.splitext(base_name)[0]).strip('._-') or 'video'
+            final_name = f"{safe_base}{ext}"
+            final_path = os.path.join(videos_dir, final_name)
+
+            # Handle duplicates
+            counter = 1
+            while os.path.exists(final_path):
+                final_name = f"{safe_base}_{counter}{ext}"
+                final_path = os.path.join(videos_dir, final_name)
+                counter += 1
+
+            with open(final_path, 'wb') as out_f:
+                for i in range(total_chunks):
+                    p = os.path.join(staging_root, f'chunk_{i:06d}.part')
+                    with open(p, 'rb') as in_f:
+                        shutil.copyfileobj(in_f, out_f, length=1024 * 1024)
+
+            final_size = os.path.getsize(final_path)
+            if final_size > MAX_FILE_SIZE:
+                try:
+                    os.remove(final_path)
+                except Exception:
+                    pass
+                raise ValueError('File size exceeds 2GB limit')
+
+            logger.info(
+                f"Chunked upload completed: {final_name} ({final_size / (1024*1024):.2f}MB) by user {request.user.id}"
+            )
+
+            return Response(
+                {
+                    'success': True,
+                    'filename': final_name,
+                    'message': 'Video uploaded successfully (chunked)',
+                    'size_mb': round(final_size / (1024 * 1024), 2),
+                },
+                status=status.HTTP_201_CREATED,
+            )
+        except Exception as e:
+            logger.error(f"Failed to assemble chunked upload {upload_id}: {e}", exc_info=True)
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        finally:
+            # Clean staging directory on completion/failure (best-effort)
+            try:
+                shutil.rmtree(staging_root)
+            except Exception:
+                pass
+
+
+class STTAPIView(APIView):
+    """
+    Proxy endpoints for STT API (Video Transcription).
+    All requests are forwarded to the STT API service.
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def _get_stt_headers(self):
+        """Get headers for STT API requests."""
+        from django.conf import settings
+        headers = {
+            'Content-Type': 'application/json',
+        }
+        # Add token if configured
+        stt_token = getattr(settings, 'STT_API_TOKEN', '')
+        if stt_token:
+            headers['Authorization'] = f'Bearer {stt_token}'
+        return headers
+    
+    def _get_stt_url(self, endpoint=''):
+        """Get full STT API URL."""
+        from django.conf import settings
+        stt_base_url = getattr(settings, 'STT_API_URL', 'http://192.168.1.68:8967')
+        return f"{stt_base_url.rstrip('/')}/{endpoint.lstrip('/')}"
+    
+    def get(self, request, **kwargs):
+        """Proxy GET requests to STT API."""
+        import logging
+        import requests
+        
+        logger = logging.getLogger(__name__)
+        
+        # Get job_id from kwargs if present
+        job_id = kwargs.get('job_id', None)
+        
+        # Determine endpoint from URL path
+        if 'health' in request.path:
+            stt_endpoint = 'health'
+        elif 'jobs' in request.path:
+            # Extract job_id from URL parameter or path
+            if job_id:
+                # Check if this is result or events endpoint
+                if 'result' in request.path:
+                    stt_endpoint = f'jobs/{job_id}/result'
+                elif 'events' in request.path:
+                    # SSE endpoint - handled separately
+                    return self._handle_sse(request, job_id)
+                else:
+                    stt_endpoint = f'jobs/{job_id}'
+            else:
+                # Extract from path if not in URL parameter
+                path_parts = [p for p in request.path.split('/') if p]
+                try:
+                    jobs_idx = path_parts.index('jobs')
+                    if jobs_idx + 1 < len(path_parts):
+                        job_id_from_path = path_parts[jobs_idx + 1]
+                        if 'result' in path_parts:
+                            stt_endpoint = f'jobs/{job_id_from_path}/result'
+                        elif 'events' in path_parts:
+                            # SSE endpoint - handled separately
+                            return self._handle_sse(request, job_id_from_path)
+                        else:
+                            stt_endpoint = f'jobs/{job_id_from_path}'
+                    else:
+                        stt_endpoint = 'jobs'
+                except ValueError:
+                    # 'jobs' not in path_parts
+                    stt_endpoint = 'jobs'
+        else:
+            return Response(
+                {'error': 'Invalid endpoint'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            url = self._get_stt_url(stt_endpoint)
+            logger.info(f"STT API GET request: {url}")
+            response = requests.get(url, headers=self._get_stt_headers(), timeout=30)
+            logger.info(f"STT API response status: {response.status_code}")
+            response_data = response.json()
+            logger.debug(f"STT API response data: {response_data}")
+            return Response(response_data, status=response.status_code)
+        except Exception as e:
+            logger.error(f"Error calling STT API: {str(e)}", exc_info=True)
+            return Response(
+                {'error': f'Failed to communicate with STT API: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+    
+    def post(self, request, endpoint=''):
+        """Proxy POST requests to STT API."""
+        import logging
+        import requests
+        
+        logger = logging.getLogger(__name__)
+        
+        # Determine endpoint from URL path
+        if 'jobs' in request.path:
+            stt_endpoint = 'jobs'
+        else:
+            return Response(
+                {'error': 'Invalid endpoint'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            url = self._get_stt_url(stt_endpoint)
+            response = requests.post(
+                url,
+                json=request.data,
+                headers=self._get_stt_headers(),
+                timeout=30
+            )
+            return Response(response.json(), status=response.status_code)
+        except Exception as e:
+            logger.error(f"Error calling STT API: {str(e)}", exc_info=True)
+            return Response(
+                {'error': f'Failed to communicate with STT API: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+    
+    def _handle_sse(self, request, job_id):
+        """Handle Server-Sent Events (SSE) streaming from STT API."""
+        import logging
+        import requests
+        import json
+        
+        logger = logging.getLogger(__name__)
+        
+        def event_stream():
+            try:
+                url = self._get_stt_url(f'jobs/{job_id}/events')
+                headers = self._get_stt_headers()
+                # Add token as query param for SSE (EventSource limitation)
+                token = request.GET.get('token')
+                if token:
+                    url += f'?token={token}'
+                
+                response = requests.get(url, headers=headers, stream=True, timeout=300)
+                response.raise_for_status()
+                
+                for line in response.iter_lines():
+                    if line:
+                        line_str = line.decode('utf-8')
+                        if line.startswith(b'data: ') or line.startswith(b'event: '):
+                            yield f"{line_str}\n\n"
+                        else:
+                            # If it's just JSON data, wrap it in SSE format
+                            yield f"data: {line_str}\n\n"
+            except Exception as e:
+                logger.error(f"Error in SSE stream: {str(e)}", exc_info=True)
+                yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
+        
+        from django.http import StreamingHttpResponse
+        response = StreamingHttpResponse(event_stream(), content_type='text/event-stream')
+        response['Cache-Control'] = 'no-cache'
+        response['X-Accel-Buffering'] = 'no'
+        return response
+
+
+class TodoItemViewSet(viewsets.ModelViewSet):
+    serializer_class = TodoItemSerializer
+    permission_classes = [IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    filterset_fields = ['status', 'priority']
+    search_fields = ['title', 'description']
+    ordering_fields = ['created_at', 'priority', 'due_date']
+    ordering = ['-priority', 'created_at']
+    
+    def get_queryset(self):
+        return TodoItem.objects.filter(user=self.request.user)
+
+
+class VideoTranscriptionViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet for managing video transcriptions.
+    Users can only see and manage their own transcriptions.
+    """
+    permission_classes = [IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    search_fields = ['filename', 'transcription_text']
+    ordering_fields = ['created_at', 'updated_at']
+    ordering = ['-created_at']
+    
+    def get_queryset(self):
+        """Only return transcriptions for the current user."""
+        return VideoTranscription.objects.filter(user=self.request.user)
+    
+    def get_serializer_class(self):
+        """Use different serializers for create vs retrieve/list."""
+        if self.action == 'create':
+            return VideoTranscriptionCreateSerializer
+        return VideoTranscriptionSerializer
+    
+    def perform_create(self, serializer):
+        """Save transcription with current user."""
+        instance = serializer.save(user=self.request.user)
+        
+        # Trigger summary generation task in background
+        from .tasks import generate_transcription_summary_task
+        generate_transcription_summary_task.delay(instance.id)
+    
+    @action(detail=True, methods=['patch'], url_path='speakers')
+    def update_speakers(self, request, pk=None):
+        """
+        Update speaker mappings for a transcription.
+        Expects: { "speaker_mappings": { "User1": "João", "User2": "Maria", ... } }
+        """
+        transcription = self.get_object()
+        serializer = SpeakerMappingUpdateSerializer(data=request.data)
+        
+        if serializer.is_valid():
+            transcription.speaker_mappings = serializer.validated_data['speaker_mappings']
+            transcription.save()
+            
+            # If summary hasn't been generated yet and transcription is complete, trigger it
+            if not transcription.summary and not transcription.summary_generating:
+                from .tasks import generate_transcription_summary_task
+                generate_transcription_summary_task.delay(transcription.id)
+            
+            return Response(
+                VideoTranscriptionSerializer(transcription).data,
+                status=status.HTTP_200_OK
+            )
+        
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 

@@ -3,7 +3,7 @@ from django.utils import timezone
 from datetime import timedelta
 from typing import Dict, Any
 from django.conf import settings
-from .models import AgendaEvent, UserNotificationPreferences
+from .models import AgendaEvent, UserNotificationPreferences, VideoTranscription
 from .push_notifications import send_web_push_to_user
 from .services.web_search_service import search_web, format_search_results
 from .services.pusher_service import publish_to_user
@@ -381,4 +381,135 @@ Com base nestes resultados da pesquisa, responde à pergunta do utilizador de fo
         
         # Re-raise to let Celery handle retry if configured
         raise
+
+
+@shared_task(name='assistant.tasks.generate_transcription_summary_task')
+def generate_transcription_summary_task(transcription_id: int) -> Dict[str, Any]:
+    """
+    Generate a summary of a video transcription using Ollama.
+    This task runs asynchronously after a transcription is saved.
+    
+    Args:
+        transcription_id: ID of the VideoTranscription to summarize
+    
+    Returns:
+        Dictionary with success status and summary text
+    """
+    try:
+        transcription = VideoTranscription.objects.get(id=transcription_id)
+        
+        # Mark as generating
+        transcription.summary_generating = True
+        transcription.save(update_fields=['summary_generating'])
+        
+        logger.info(f"Generating summary for transcription {transcription_id}")
+        
+        # Extract transcription text and apply speaker mappings if available
+        transcription_text = transcription.transcription_text
+        
+        # Apply speaker mappings if they exist
+        if transcription.speaker_mappings:
+            for speaker_id, speaker_name in transcription.speaker_mappings.items():
+                if speaker_name:  # Only replace if name is not empty
+                    transcription_text = transcription_text.replace(
+                        f"{speaker_id}:", 
+                        f"{speaker_name}:"
+                    )
+        
+        # Limit transcription text size to avoid overwhelming Ollama
+        # Ollama has context limits, so we'll truncate if too long (keep last 8000 chars)
+        MAX_TRANSCRIPTION_LENGTH = 8000
+        if len(transcription_text) > MAX_TRANSCRIPTION_LENGTH:
+            logger.warning(f"Transcription text too long ({len(transcription_text)} chars), truncating to last {MAX_TRANSCRIPTION_LENGTH} chars")
+            transcription_text = "..." + transcription_text[-MAX_TRANSCRIPTION_LENGTH:]
+        
+        # Build prompt for Ollama
+        prompt = f"""Analisa a seguinte transcrição de uma reunião/conversa e cria um resumo estruturado.
+
+Transcrição:
+{transcription_text}
+
+Cria um resumo que inclua:
+1. Tópicos principais discutidos
+2. Decisões tomadas (se houver)
+3. Ações ou tarefas identificadas (se houver)
+4. Pontos importantes mencionados
+
+Responde em português de Portugal e sê conciso mas completo."""
+
+        # Call Ollama to generate summary with retry logic
+        messages = [
+            {
+                "role": "system",
+                "content": "És um assistente especializado em resumir reuniões e conversas. Crias resumos claros e estruturados."
+            },
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ]
+        
+        # Retry logic for Ollama calls
+        max_retries = 3
+        retry_delay = 5  # seconds
+        summary_text = None
+        
+        for attempt in range(1, max_retries + 1):
+            try:
+                logger.info(f"Calling Ollama to generate summary (attempt {attempt}/{max_retries})")
+                summary_text = call_ollama(messages)
+                logger.info(f"Summary generated, length: {len(summary_text)}")
+                break  # Success, exit retry loop
+            except Exception as ollama_error:
+                logger.warning(f"Ollama call failed (attempt {attempt}/{max_retries}): {str(ollama_error)}")
+                if attempt < max_retries:
+                    logger.info(f"Retrying in {retry_delay} seconds...")
+                    import time
+                    time.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff
+                else:
+                    # All retries failed
+                    logger.error(f"All {max_retries} attempts to call Ollama failed")
+                    raise
+        
+        if not summary_text:
+            raise Exception("Failed to generate summary after all retries")
+        
+        # Save summary
+        transcription.summary = summary_text
+        transcription.summary_generating = False
+        transcription.save(update_fields=['summary', 'summary_generating'])
+        
+        logger.info(f"Summary saved for transcription {transcription_id}")
+        
+        return {
+            'success': True,
+            'transcription_id': transcription_id,
+            'summary_length': len(summary_text)
+        }
+        
+    except VideoTranscription.DoesNotExist:
+        logger.error(f"Transcription {transcription_id} not found")
+        return {
+            'success': False,
+            'error': 'Transcription not found'
+        }
+    except Exception as e:
+        logger.error(f"Error generating summary for transcription {transcription_id}: {e}", exc_info=True)
+        
+        # Mark as not generating on error and save error message
+        try:
+            transcription = VideoTranscription.objects.get(id=transcription_id)
+            transcription.summary_generating = False
+            # Save error message in summary field so user knows what happened
+            transcription.summary = f"Erro ao gerar resumo: {str(e)}. Por favor, tente novamente mais tarde."
+            transcription.save(update_fields=['summary', 'summary_generating'])
+        except Exception as save_error:
+            logger.error(f"Error updating transcription after summary generation failure: {save_error}")
+        
+        return {
+            'success': False,
+            'error': str(e),
+            'transcription_id': transcription_id
+        }
 

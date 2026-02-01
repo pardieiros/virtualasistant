@@ -6,6 +6,7 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     image: virtualassistant-backend:latest
+    restart: unless-stopped
     env_file:
       - ./backend/.env
     environment:

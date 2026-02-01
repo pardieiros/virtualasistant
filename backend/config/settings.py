@@ -216,6 +216,21 @@ VAPID_EMAIL = WEBPUSH_VAPID_SUB
 # TTS (Text-to-Speech) Configuration
 TTS_SERVICE_URL = os.getenv('TTS_SERVICE_URL', 'http://192.168.1.73:8010/api/tts/')
 
+# STT API Configuration (Video Transcription)
+STT_API_URL = os.getenv('STT_API_URL', 'http://192.168.1.68:8967')
+STT_API_TOKEN = os.getenv('STT_API_TOKEN', '')
+
+# Videos directory - should match STT API's VIDEOS_DIR
+# Default to /srv/smb/videos if it exists, otherwise use local videos dir
+VIDEOS_DIR = os.getenv('VIDEOS_DIR', None)
+if not VIDEOS_DIR:
+    # Check if /srv/smb/videos exists (STT API default)
+    if os.path.exists('/srv/smb/videos'):
+        VIDEOS_DIR = '/srv/smb/videos'
+    else:
+        # Fallback to local videos directory
+        VIDEOS_DIR = os.path.join(BASE_DIR, 'videos')
+
 # SearXNG Configuration
 # SearXNG is accessible from Docker containers using the host IP
 SEARXNG_BASE_URL = os.getenv('SEARXNG_BASE_URL', 'http://192.168.1.73:8080')
@@ -347,4 +362,3 @@ DATA_UPLOAD_MAX_MEMORY_SIZE = 10485760  # 10MB - force large files to disk
 FILE_UPLOAD_MAX_MEMORY_SIZE = 10485760  # 10MB - force large files to disk
 DATA_UPLOAD_MAX_NUMBER_FIELDS = 10240
 FILE_UPLOAD_TEMP_DIR = None  # Use system temp directory
-

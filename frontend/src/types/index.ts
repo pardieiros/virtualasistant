@@ -110,5 +110,15 @@ export interface TodoItem {
   created_at: string;
   updated_at: string;
   completed_at: string | null;
+}export interface VideoTranscription {
+  id: number;
+  filename: string;
+  transcription_text: string;
+  language: string;
+  diarization_enabled: boolean;
+  speaker_mappings: Record<string, string>;
+  summary: string | null;
+  summary_generating: boolean;
+  created_at: string;
+  updated_at: string;
 }
-

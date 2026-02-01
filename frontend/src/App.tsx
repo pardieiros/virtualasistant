@@ -11,6 +11,7 @@ import Settings from './pages/Settings';
 import HomeAssistant from './pages/HomeAssistant';
 import Conversation from './pages/Conversation';
 import VideoTranscription from './pages/VideoTranscription';
+import QuickActions from './pages/QuickActions';
 
 const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { isAuthenticated, loading } = useAuth();
@@ -41,6 +42,7 @@ function App() {
             }
           >
             <Route index element={<Chat />} />
+            <Route path="actions" element={<QuickActions />} />
             <Route path="shopping" element={<ShoppingList />} />
             <Route path="agenda" element={<Agenda />} />
             <Route path="notes" element={<Notes />} />

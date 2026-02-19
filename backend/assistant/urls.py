@@ -21,6 +21,7 @@ from .views import (
     VideoUploadChunkView,
     STTAPIView,
     VideoTranscriptionViewSet,
+    ClassroomLessonView,
 )
 
 router = DefaultRouter()
@@ -53,6 +54,6 @@ urlpatterns = [
     path('stt/jobs/<str:job_id>/', STTAPIView.as_view(), name='stt_job_status'),
     path('stt/jobs/<str:job_id>/result/', STTAPIView.as_view(), name='stt_job_result'),
     path('stt/jobs/<str:job_id>/events/', STTAPIView.as_view(), name='stt_job_events'),
+    path('classroom/lesson/', ClassroomLessonView.as_view(), name='classroom_lesson'),
     path('', include(router.urls)),
 ]
-

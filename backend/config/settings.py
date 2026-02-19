@@ -177,7 +177,7 @@ CORS_ALLOW_CREDENTIALS = True
 
 # Ollama Configuration
 OLLAMA_BASE_URL = os.getenv('OLLAMA_BASE_URL', 'http://localhost:11434')
-OLLAMA_MODEL = os.getenv('OLLAMA_MODEL', 'marco-assistente')
+OLLAMA_MODEL = os.getenv('OLLAMA_MODEL', 'qwen3-vl:8b')
 
 # Soketi/Pusher Configuration
 SOCKET_APP_ID = os.getenv('SOCKET_APP_ID', '')

@@ -4,6 +4,8 @@ Service for managing user memories with vector search.
 from typing import List, Optional, Dict, Any
 from django.contrib.auth.models import User
 from django.db.models import Q
+from django.utils import timezone
+from datetime import timedelta
 from ..models import Memory
 from .embedding_service import generate_embedding
 import logging
@@ -196,6 +198,37 @@ def extract_memories_from_conversation(
         List of created Memory instances
     """
     memories = []
+
+    # Always persist the interaction so the assistant can remember "what user said".
+    # Keep concise content to avoid polluting memory with very large chunks.
+    user_excerpt = (user_message or "").strip()[:500]
+    assistant_excerpt = (assistant_response or "").strip()[:500]
+    if user_excerpt:
+        interaction_content = (
+            f"Interação recente - Utilizador: {user_excerpt}"
+            + (f" | Assistente: {assistant_excerpt}" if assistant_excerpt else "")
+        )
+
+        # Avoid storing exact duplicates repeatedly in short bursts.
+        recent_duplicate = Memory.objects.filter(
+            user=user,
+            memory_type='interaction',
+            content=interaction_content,
+            created_at__gte=timezone.now() - timedelta(minutes=15),
+        ).exists()
+
+        if not recent_duplicate:
+            memories.append(save_memory(
+                user=user,
+                content=interaction_content,
+                memory_type='interaction',
+                metadata={
+                    'source': 'chat_turn',
+                    'user_message': user_excerpt,
+                    'assistant_response': assistant_excerpt,
+                },
+                importance=0.35,
+            ))
     
     # Save shopping-related memories
     if actions_taken:
@@ -243,7 +276,10 @@ def extract_memories_from_conversation(
     
     # Save general interaction if it contains important information
     # (This is a simple heuristic - could be improved with LLM-based extraction)
-    important_keywords = ['prefer', 'gosto', 'não gosto', 'sempre', 'nunca', 'habitualmente']
+    important_keywords = [
+        'prefer', 'preferência', 'gosto', 'não gosto', 'sempre', 'nunca',
+        'habitualmente', 'costumo', 'chamo-me', 'sou', 'tenho', 'vivo', 'trabalho',
+    ]
     if any(keyword in user_message.lower() for keyword in important_keywords):
         memories.append(save_memory(
             user=user,
@@ -253,4 +289,3 @@ def extract_memories_from_conversation(
         ))
     
     return memories
-

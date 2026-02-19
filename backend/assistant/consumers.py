@@ -5,6 +5,7 @@ import json
 import base64
 import asyncio
 import logging
+import uuid
 from typing import Optional, List
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
@@ -14,6 +15,7 @@ from asgiref.sync import sync_to_async
 from .services.stt_service import transcribe_audio, detect_silence
 from .services.ollama_client import stream_ollama_chat, build_messages
 from .services.tts_service import generate_speech
+from .services.language_lesson_service import build_classroom_system_prompt
 from .models import Conversation, ConversationMessage
 
 logger = logging.getLogger(__name__)
@@ -471,3 +473,141 @@ class VoiceConsumer(AsyncWebsocketConsumer):
             "value": "error"
         })
 
+
+class ClassroomConsumer(AsyncWebsocketConsumer):
+    """
+    Lightweight classroom websocket tutor for EN/FR/DE.
+
+    Protocol (text frames JSON):
+    - client: {"type":"start_session","language":"en|fr|de","level":"beginner|intermediate|advanced"}
+    - client: {"type":"user_message","text":"...","session_id":"..."}
+    - client: {"type":"ping"}
+    - server: {"type":"session","session_id":"...","language":"en"}
+    - server: {"type":"assistant_token","token":"..."}
+    - server: {"type":"reply_text","text":"..."}
+    - server: {"type":"assistant_done"}
+    - server: {"type":"error","message":"..."}
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.user: Optional[User] = None
+        self.session_id: Optional[str] = None
+        self.language: str = 'en'
+        self.level: str = 'beginner'
+        self.history: List[dict] = []
+
+    async def connect(self):
+        self.user = self.scope.get("user")
+        if not self.user or not self.user.is_authenticated:
+            await self.close(code=4001)
+            return
+        await self.accept()
+
+    async def receive(self, text_data=None, bytes_data=None):
+        if not text_data:
+            return
+        try:
+            data = json.loads(text_data)
+        except json.JSONDecodeError:
+            await self.send_json_event({"type": "error", "message": "Invalid JSON"})
+            return
+
+        msg_type = data.get("type")
+        if msg_type == "start_session":
+            await self.handle_start_session(data)
+        elif msg_type == "user_message":
+            await self.handle_user_message(data)
+        elif msg_type == "ping":
+            await self.send_json_event({"type": "pong"})
+        else:
+            await self.send_json_event({"type": "error", "message": "Unknown message type"})
+
+    async def handle_start_session(self, data: dict):
+        language = (data.get("language") or "en").strip().lower()
+        level = (data.get("level") or "beginner").strip().lower()
+        if language not in {"en", "fr", "de"}:
+            await self.send_json_event({"type": "error", "message": "Unsupported language. Use en, fr or de."})
+            return
+        if level not in {"beginner", "intermediate", "advanced"}:
+            level = "beginner"
+
+        self.language = language
+        self.level = level
+        self.session_id = str(uuid.uuid4())
+        system_prompt = build_classroom_system_prompt(language=language, level=level)
+        self.history = [{"role": "system", "content": system_prompt}]
+
+        await self.send_json_event({
+            "type": "session",
+            "session_id": self.session_id,
+            "language": self.language,
+            "level": self.level,
+        })
+
+        greeting = self._greeting()
+        self.history.append({"role": "assistant", "content": greeting})
+        await self.send_json_event({"type": "reply_text", "text": greeting})
+        await self.send_json_event({"type": "assistant_done"})
+
+    async def handle_user_message(self, data: dict):
+        if not self.session_id:
+            await self.send_json_event({"type": "error", "message": "Session not started"})
+            return
+        req_session_id = (data.get("session_id") or "").strip()
+        if req_session_id and req_session_id != self.session_id:
+            await self.send_json_event({"type": "error", "message": "Invalid session_id"})
+            return
+
+        text = (data.get("text") or "").strip()
+        if not text:
+            return
+
+        self.history.append({"role": "user", "content": text})
+        assistant_text = ""
+
+        try:
+            for chunk in await sync_to_async(list)(stream_ollama_chat(self.history)):
+                event_type = chunk.get("type")
+                if event_type == "chunk":
+                    token = chunk.get("content", "")
+                    if token:
+                        assistant_text += token
+                        await self.send_json_event({"type": "assistant_token", "token": token})
+                elif event_type == "done":
+                    final_text = chunk.get("full_text", "").strip()
+                    if final_text:
+                        assistant_text = final_text
+                elif event_type == "error":
+                    await self.send_json_event({"type": "error", "message": chunk.get("error", "LLM error")})
+                    return
+
+            if not assistant_text:
+                assistant_text = self._fallback_message()
+
+            self.history.append({"role": "assistant", "content": assistant_text})
+            if len(self.history) > 20:
+                self.history = [self.history[0]] + self.history[-19:]
+
+            await self.send_json_event({"type": "reply_text", "text": assistant_text})
+            await self.send_json_event({"type": "assistant_done"})
+        except Exception as e:
+            logger.error(f"Classroom websocket error: {e}", exc_info=True)
+            await self.send_json_event({"type": "error", "message": "Failed to generate tutor response"})
+
+    def _greeting(self) -> str:
+        if self.language == "fr":
+            return "Bonjour. Je suis ton tuteur de français. Écris une phrase simple pour commencer."
+        if self.language == "de":
+            return "Hallo. Ich bin dein Deutschlehrer. Schreib einen einfachen Satz zum Start."
+        return "Hello. I am your English tutor. Write one simple sentence to start."
+
+    def _fallback_message(self) -> str:
+        if self.language == "fr":
+            return "Bien essayé. Corrigeons ensemble: écris une nouvelle phrase plus simple."
+        if self.language == "de":
+            return "Gut versucht. Lass uns korrigieren: schreibe einen einfacheren Satz."
+        return "Good try. Let's fix it together: write a simpler sentence."
+
+    async def send_json_event(self, event: dict):
+        await self.send(text_data=json.dumps(event))

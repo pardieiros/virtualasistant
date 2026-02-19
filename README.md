@@ -141,15 +141,15 @@ The frontend will be available at `http://localhost:5173`
 
 2. **Create or use a model:**
    ```bash
-   # Example: Create a model named "marco-assistente"
-   ollama create marco-assistente -f Modelfile
+   # Example: pull qwen3-vl:8b
+   ollama pull qwen3-vl:8b
    ```
    
    Or use an existing model like `llama2`, `mistral`, etc.
 
 3. **Update `.env` in backend:**
    ```env
-   OLLAMA_MODEL=marco-assistente
+   OLLAMA_MODEL=qwen3-vl:8b
    OLLAMA_BASE_URL=http://localhost:11434
    ```
 
@@ -306,4 +306,3 @@ This is a personal project, but suggestions and improvements are welcome!
 ---
 
 Built with ❤️ using Django, React, and Ollama
-

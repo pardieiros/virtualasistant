@@ -36,11 +36,32 @@ from .services.tool_dispatcher import dispatch_tool
 from .services.pusher_service import publish_to_user
 from .services.memory_service import extract_memories_from_conversation
 from .services.tts_service import generate_speech
+from .services.language_lesson_service import build_language_lesson
 from django.conf import settings
 from django.http import StreamingHttpResponse
 import hmac
 import hashlib
 import json
+
+
+class ClassroomLessonView(APIView):
+    """
+    Generate a language lesson for EN/FR/DE.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        language = (request.data.get('language') or 'en').strip().lower()
+        level = (request.data.get('level') or 'beginner').strip().lower()
+        topic = (request.data.get('topic') or 'daily conversation').strip()
+
+        try:
+            lesson = build_language_lesson(language=language, level=level, topic=topic)
+            return Response(lesson, status=status.HTTP_200_OK)
+        except ValueError as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 class ShoppingItemViewSet(viewsets.ModelViewSet):
@@ -1827,4 +1848,3 @@ class VideoTranscriptionViewSet(viewsets.ModelViewSet):
             )
         
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-

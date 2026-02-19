@@ -68,7 +68,8 @@ def get_relevant_memories_cached(user: User, user_message: str, limit: int = 5) 
     if not user or not user.id:
         return []
     
-    # Heuristic: only search memories if message seems relevant
+    # Heuristic: prefer semantic search when message seems memory-related,
+    # otherwise fall back to recent memories so assistant keeps continuity.
     message_lower = user_message.lower()
     
     # Keywords that suggest memory might be relevant
@@ -82,8 +83,14 @@ def get_relevant_memories_cached(user: User, user_message: str, limit: int = 5) 
     should_search = any(keyword in message_lower for keyword in memory_keywords)
     
     if not should_search:
-        logger.debug(f"Skipping memory search for user {user.id} - no relevant keywords")
-        return []
+        from .memory_service import get_recent_memories
+        recent = get_recent_memories(user, limit=min(limit, 3))
+        recent_dicts = [
+            {'content': mem.content, 'type': mem.memory_type}
+            for mem in recent
+        ]
+        logger.debug(f"Using {len(recent_dicts)} recent memories for user {user.id}")
+        return recent_dicts
     
     # Create cache key based on message hash
     import hashlib
@@ -123,7 +130,6 @@ def invalidate_base_prompt_cache():
     """Invalidate base prompt cache (rarely needed)."""
     cache.delete(CACHE_KEY_BASE_PROMPT)
     logger.info("Base system prompt cache invalidated")
-
 
 
 

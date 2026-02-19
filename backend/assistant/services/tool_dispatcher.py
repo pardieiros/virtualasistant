@@ -5,6 +5,7 @@ from datetime import datetime, timezone, timedelta
 from ..models import ShoppingItem, AgendaEvent, Note, UserNotificationPreferences, TodoItem
 from .homeassistant_client import call_homeassistant_service, get_homeassistant_states
 from .terminal_api_service import execute_terminal_command
+from .language_lesson_service import build_language_lesson
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,8 @@ def dispatch_tool(tool_name: str, args: Dict[str, Any], user: User) -> Dict[str,
         return homeassistant_get_states(args, user)
     elif tool_name == 'terminal_command':
         return terminal_command(args, user)
+    elif tool_name == 'start_language_lesson':
+        return start_language_lesson(args, user)
     elif tool_name == 'web_search':
         # Web search is handled asynchronously via Celery task
         # This should not be called directly
@@ -343,6 +346,33 @@ def save_note(args: Dict[str, Any], user: User) -> Dict[str, Any]:
         }
 
 
+def start_language_lesson(args: Dict[str, Any], user: User) -> Dict[str, Any]:
+    """
+    Build a structured lesson for English, French or German.
+    """
+    try:
+        language = (args.get('language') or 'en').strip().lower()
+        level = (args.get('level') or 'beginner').strip().lower()
+        topic = (args.get('topic') or 'daily conversation').strip()
+
+        lesson = build_language_lesson(language=language, level=level, topic=topic)
+        return {
+            'success': True,
+            'message': f"Lesson generated for {lesson['language_name']}",
+            'data': lesson,
+        }
+    except ValueError as e:
+        return {
+            'success': False,
+            'message': str(e),
+        }
+    except Exception as e:
+        return {
+            'success': False,
+            'message': f'Error generating lesson: {str(e)}',
+        }
+
+
 def _get_season() -> str:
     """Determine current season based on month.
     Returns: 'summer' for June-August, 'winter' for other months."""
@@ -583,4 +613,3 @@ def terminal_command(args: Dict[str, Any], user: User) -> Dict[str, Any]:
     
     result = execute_terminal_command(command, user)
     return result
-

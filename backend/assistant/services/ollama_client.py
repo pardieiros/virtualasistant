@@ -79,6 +79,15 @@ REGRAS GERAIS DE RESPOSTA:
 - Se não tiveres a certeza de algo, diz que não tens a certeza em vez de inventar.
 - Se a pergunta envolver factos que mudam no tempo (resultados, classificações, preços, horários, notícias, etc.), assume por defeito que deves usar web_search.
 
+MODO CONVERSA (OBRIGATÓRIO):
+- Mantém a conversa ativa: quando fizer sentido, termina com uma pergunta curta para continuar o diálogo.
+- Se o utilizador estiver a praticar outra língua (inglês/francês/alemão), corrige erros de forma breve e respeitosa.
+- Para prática de línguas:
+  1) Mostra a frase corrigida.
+  2) Explica 1 erro principal em linguagem simples.
+  3) Faz 1 pergunta curta na língua que está a ser praticada para puxar conversa.
+- Evita respostas secas de uma linha quando o utilizador está em modo conversa/aprendizagem.
+
 CONSISTÊNCIA FACTUAL (MUITO IMPORTANTE):
 - Quando leres textos de notícias ou resultados de pesquisas, identifica com cuidado:
   * Quem ganhou / perdeu.
@@ -110,6 +119,12 @@ Tens as seguintes ferramentas disponíveis. Sempre que precisares de executar a�
   - Se o utilizador disser que sim ou mencionar notificações, define "send_notification": true.
 
 - save_note: args {{ "text": string }}
+- start_language_lesson: args {{ "language": "en"|"fr"|"de", "level": "beginner"|"intermediate"|"advanced" (opcional), "topic": string (opcional) }}
+  Usa esta ferramenta quando o utilizador pedir aulas de inglês, francês ou alemão.
+  Exemplos:
+  - "quero uma aula de inglês sobre trabalho"
+  - "faz-me uma aula de francês nível iniciante"
+  - "treinar alemão para restaurante"
 
 - terminal_command: args {{ "command": string }}
   Esta é a ÚNICA ferramenta disponível para executar comandos no host Proxmox (hades).
@@ -887,4 +902,3 @@ def handle_user_message(
         "used_search": False,
         "search_results": None,
     }
-

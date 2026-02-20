@@ -9,9 +9,10 @@ RUN apt-get update && apt-get install -y \
     libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements and install Python dependencies
+# Copy requirements and install Python dependencies (setuptools first for pkg_resources on Python 3.13)
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir "setuptools>=65.0.0,<70" && \
+    pip install --no-cache-dir -r requirements.txt
 
 # Copy .env file from backend folder (if exists)
 COPY .env* ./

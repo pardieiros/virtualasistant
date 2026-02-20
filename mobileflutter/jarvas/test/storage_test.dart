@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:jarvas/core/utils.dart';
+import 'package:jarvas/core/config.dart';
 
 void main() {
   group('normalizeBaseUrl', () {
